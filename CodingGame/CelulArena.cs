@@ -8,6 +8,9 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 
+// ReSharper disable CheckNamespace
+// ReSharper disable InconsistentNaming
+
 //	Rules
 // The game is played on a grid.
 // 
@@ -69,58 +72,55 @@ using System.Collections.ObjectModel;
 
 public class Arena
 {
-    public readonly int HEIGHT;
-    public readonly int WIDTH;
+    public readonly int Height;
+    public readonly int OwnerMe = 1;
+    public readonly int Width;
 
-    private Entity[] _entities;
-
-
-    private Node[] grid;
-
-    public Entity[] MyOrgans;
-    public int Owner_Me = 1;
-    public Node[] Resources;
+    private Entity[] _entities = [];
+    private Node[] _grid = [];
+    public Entity[] MyOrgans = [];
+    public Node[] Resources = [];
 
     public Arena(int width, int height)
     {
-        WIDTH = width;
-        HEIGHT = height;
+        Width = width;
+        Height = height;
     }
 
-    public ReadOnlyCollection<Node> Grid => grid.AsReadOnly();
+    public ReadOnlyCollection<Node> Grid => _grid.AsReadOnly();
 
     public void UpdateArenaWithEntities(Entity[] entities)
     {
         _entities = entities;
-        MyOrgans = entities.Where(e => e.Owner == Owner_Me).ToArray();
+        MyOrgans = entities.Where(e => e.Owner == OwnerMe).ToArray();
 
-        grid = new Node[WIDTH * HEIGHT];
-        for (var i = 0; i < WIDTH * HEIGHT; i++)
-            grid[i] = new Node
+        _grid = new Node[Width * Height];
+        for (var i = 0; i < Width * Height; i++)
+            _grid[i] = new Node
             {
-                X = i % WIDTH,
-                Y = i / WIDTH,
+                X = i % Width,
+                Y = i / Width,
                 Type = NodeType.EMPTY,
                 Occupier = null
             };
 
         foreach (var entity in entities)
         {
-            var index = entity.Y * WIDTH + entity.X;
-            grid[index].Occupier = entity;
+            var index = entity.Y * Width + entity.X;
+            _grid[index].Occupier = entity;
             switch (entity.EntityType)
             {
                 case EntityType.WALL:
-                    grid[index].Type = NodeType.WALL;
+                    _grid[index].Type = NodeType.WALL;
                     break;
                 case EntityType.A:
                 case EntityType.B:
                 case EntityType.C:
                 case EntityType.D:
-                    grid[index].Type = NodeType.PROTEIN_SOURCE;
+                    _grid[index].Type = NodeType.PROTEIN_SOURCE;
                     break;
                 default:
-                    grid[index].Type = NodeType.ORGANISM;
+                    _grid[index].Type = NodeType.ORGANISM;
                     break;
             }
         }
@@ -130,7 +130,7 @@ public class Arena
 
     public Node[] GetNodesICanGrowInto()
     {
-        var myOrgans = _entities.Where(e => e.Owner == Owner_Me);
+        var myOrgans = _entities.Where(e => e.Owner == OwnerMe);
         var growableNodes = new List<Node>();
 
         foreach (var organ in myOrgans)
@@ -145,11 +145,11 @@ public class Arena
 
             foreach (var pos in adjacentPositions)
             {
-                if (pos.X < 0 || pos.X >= WIDTH || pos.Y < 0 || pos.Y >= HEIGHT)
+                if (pos.X < 0 || pos.X >= Width || pos.Y < 0 || pos.Y >= Height)
                     continue;
 
-                var index = pos.Y * WIDTH + pos.X;
-                var node = grid[index];
+                var index = pos.Y * Width + pos.X;
+                var node = _grid[index];
                 if (node.Type == NodeType.EMPTY || node.Type == NodeType.PROTEIN_SOURCE) growableNodes.Add(node);
             }
         }
@@ -159,23 +159,24 @@ public class Arena
 
     private Node[] UpdateResourceNodes()
     {
-        return grid.Where(n => n.Type == NodeType.PROTEIN_SOURCE).ToArray();
+        return _grid.Where(n => n.Type == NodeType.PROTEIN_SOURCE).ToArray();
     }
 
     public Node[] SortNodesByDistanceTo(Node targetNode)
     {
-        return grid.OrderBy(n => Utilities.CalculateDistance(n, targetNode)).ToArray();
+        return _grid.OrderBy(n => Utilities.CalculateDistance(n, targetNode)).ToArray();
     }
 
     public Node[] SortByDistanceToNodesICanGrowInto(Node[] nodesICanGrowInto)
     {
-        return grid.OrderBy(n => nodesICanGrowInto.Min(growNode => Utilities.CalculateDistance(n, growNode))).ToArray();
+        return _grid.OrderBy(n => nodesICanGrowInto.Min(growNode => Utilities.CalculateDistance(n, growNode)))
+            .ToArray();
     }
 
     public Node[] SortByDistanceToResourceNodes(Node[] nodesICanGrowInto)
     {
         var resourceNodes = UpdateResourceNodes();
-        return grid.OrderBy(n => resourceNodes.Min(resourceNode => Utilities.CalculateDistance(n, resourceNode)))
+        return _grid.OrderBy(n => resourceNodes.Min(resourceNode => Utilities.CalculateDistance(n, resourceNode)))
             .ToArray();
     }
 }
@@ -209,7 +210,7 @@ public abstract class BaseNode
 
 public class Node : BaseNode
 {
-    public Entity Occupier;
+    public Entity? Occupier;
     public NodeType Type;
 
     public override string ToString()
@@ -220,8 +221,8 @@ public class Node : BaseNode
 
 public class Entity : BaseNode
 {
-    public string EntityType;
-    public string OrganDir;
+    public string EntityType = "";
+    public string OrganDir = "";
     public int OrganId;
     public int OrganParentId;
     public int OrganRootId;
@@ -266,7 +267,7 @@ public class Resources
 
 public class ActionSlot
 {
-    public Action Action { get; set; }
+    public required Action Action { get; set; }
 }
 
 public abstract class Action
@@ -326,11 +327,11 @@ public class Strategies
         _player = player;
     }
 
-    public Node GetClosestOrganToNode(Node node)
+    public Node? GetClosestOrganToNode(Node node)
     {
         var myOrgans = _arena.MyOrgans;
 
-        Entity closestOrgan = null;
+        Entity? closestOrgan = null;
         var closestDistance = int.MaxValue;
 
         foreach (var organ in myOrgans)
@@ -364,7 +365,7 @@ public class Strategies
         var resourceNodes = _arena.Resources;
         var myOrgans = _arena.MyOrgans;
 
-        Node closestResourceNode = null;
+        Node? closestResourceNode = null;
         var closestDistance = int.MaxValue;
 
         foreach (var resourceNode in resourceNodes)
@@ -385,7 +386,7 @@ public class Strategies
     {
         var myOrgans = _arena.MyOrgans;
 
-        Entity closestOrgan = null;
+        Entity? closestOrgan = null;
         var closestDistance = int.MaxValue;
 
         foreach (var organ in myOrgans)
@@ -398,7 +399,7 @@ public class Strategies
             }
         }
 
-        return closestOrgan;
+        return closestOrgan!;
     }
 
     public Node[] GetNodesItCanGrowInto(BaseNode node)
@@ -415,10 +416,10 @@ public class Strategies
 
         foreach (var pos in adjacentPositions)
         {
-            if (pos.X < 0 || pos.X >= _arena.WIDTH || pos.Y < 0 || pos.Y >= _arena.HEIGHT)
+            if (pos.X < 0 || pos.X >= _arena.Width || pos.Y < 0 || pos.Y >= _arena.Height)
                 continue;
 
-            var index = pos.Y * _arena.WIDTH + pos.X;
+            var index = pos.Y * _arena.Width + pos.X;
             var gridNode = _arena.Grid[index];
             if (gridNode.Type == NodeType.EMPTY || gridNode.Type == NodeType.PROTEIN_SOURCE)
                 growableNodes.Add(gridNode);
@@ -528,12 +529,12 @@ public class Game
     private static Resources ParseResources()
     {
         string[] inputs;
-        inputs = Console.ReadLine().Split(' ');
+        inputs = Console.ReadLine()!.Split(' ');
         var myA = int.Parse(inputs[0]);
         var myB = int.Parse(inputs[1]);
         var myC = int.Parse(inputs[2]);
         var myD = int.Parse(inputs[3]); // your protein stock
-        inputs = Console.ReadLine().Split(' ');
+        inputs = Console.ReadLine()!.Split(' ');
         var oppA = int.Parse(inputs[0]);
         var oppB = int.Parse(inputs[1]);
         var oppC = int.Parse(inputs[2]);
@@ -553,7 +554,7 @@ public class Game
 
         for (var i = 0; i < entityCount; i++)
         {
-            inputs = Console.ReadLine().Split(' ');
+            inputs = Console.ReadLine()!.Split(' ');
             var x = int.Parse(inputs[0]);
             var y = int.Parse(inputs[1]); // grid coordinate
             var type = inputs[2]; // WALL, ROOT, BASIC, TENTACLE, HARVESTER, SPORER, A, B, C, D
@@ -582,7 +583,7 @@ public class Game
     private static void InitializeArena()
     {
         string[] inputs;
-        inputs = Console.ReadLine().Split(' ');
+        inputs = Console.ReadLine()!.Split(' ');
         var width = int.Parse(inputs[0]); // columns in the game grid
         var height = int.Parse(inputs[1]); // rows in the game grid
         arena = new Arena(width, height);
@@ -590,8 +591,6 @@ public class Game
 
     private static void Main(string[] args)
     {
-        string[] inputs;
-
         InitializeArena();
 
         // game loop
@@ -602,11 +601,12 @@ public class Game
             ParseResources();
 
             var requiredActionsCount =
-                int.Parse(Console.ReadLine()); // your number of organisms, output an action for each one in any order
+                int.Parse(Console.ReadLine()!); // your number of organisms, output an action for each one in any order
 
             var actionPlayer = new ActionPlayer(requiredActionsCount);
             actionPlayer = new Strategies(MyResources, OppResources, arena, actionPlayer).AggresiveStrateyV2();
             actionPlayer.Play();
         }
+        // ReSharper disable once FunctionNeverReturns
     }
 }
