@@ -369,6 +369,75 @@ public class GameArena
         return new List<GameNode>(); // No path found
     }
 
+    public List<GameNode> FindAStarPath(GameNode start, GameNode goal)
+    {
+        var openSet = new SortedSet<(int fScore, int x, int y)>();
+        var cameFrom = new Dictionary<(int, int), (int, int)>();
+        var gScore = new Dictionary<(int, int), int>();
+        var fScore = new Dictionary<(int, int), int>();
+        var inOpenSet = new HashSet<(int, int)>();
+
+        (int, int) startPos = (start.X, start.Y);
+        (int, int) goalPos = (goal.X, goal.Y);
+
+        gScore[startPos] = 0;
+        fScore[startPos] = CalculateManhattanDistance(start, goal);
+        openSet.Add((fScore[startPos], start.X, start.Y));
+        inOpenSet.Add(startPos);
+
+        while (openSet.Count > 0)
+        {
+            var currentTuple = openSet.Min;
+            openSet.Remove(currentTuple);
+            var currentPos = (currentTuple.x, currentTuple.y);
+
+            if (currentPos == goalPos)
+            {
+                // Reconstruct path
+                var path = new List<GameNode>();
+                var pos = goalPos;
+                while (pos != startPos)
+                {
+                    path.Add(GetNode(pos.Item1, pos.Item2));
+                    pos = cameFrom[pos];
+                }
+
+                path.Add(start);
+                path.Reverse();
+                return path;
+            }
+
+            inOpenSet.Remove(currentPos);
+            var currentNode = GetNode(currentPos.Item1, currentPos.Item2);
+
+            foreach (var neighbor in GetNeighbors(currentNode))
+            {
+                var neighborPos = (neighbor.X, neighbor.Y);
+
+                if (((neighbor.GameEntity is not null && neighbor.GameEntity.IsWall) ||
+                     (neighbor.GameEntity is not null && neighbor.GameEntity.IsOrganism)) &&
+                    neighborPos != goalPos)
+                    continue;
+
+                var tentativeGScore = gScore[currentPos] + 1;
+                if (!gScore.ContainsKey(neighborPos) || tentativeGScore < gScore[neighborPos])
+                {
+                    cameFrom[neighborPos] = currentPos;
+                    gScore[neighborPos] = tentativeGScore;
+                    fScore[neighborPos] = tentativeGScore + CalculateManhattanDistance(neighbor, goal);
+
+                    if (!inOpenSet.Contains(neighborPos))
+                    {
+                        openSet.Add((fScore[neighborPos], neighbor.X, neighbor.Y));
+                        inOpenSet.Add(neighborPos);
+                    }
+                }
+            }
+        }
+
+        DebugLog.INFO("No A* path found from (" + start.X + "," + start.Y + ") to (" + goal.X + "," + goal.Y + ")");
+        return new List<GameNode>(); // No path found
+    }
 
     public int GetFsbDistance(GameNode start, GameNode goal)
     {
