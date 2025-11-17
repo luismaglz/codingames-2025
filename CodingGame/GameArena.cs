@@ -505,7 +505,7 @@ public class Strategies
         _player = player;
     }
 
-    public PlayerActions GrowAndHarvest()
+    public PlayerActions Strategy_GrowAndHarvest()
     {
         DebugLog.INFO("GROW AND HARVEST");
         GrowTowardsClosestProteinSource();
@@ -514,7 +514,8 @@ public class Strategies
         return _player;
     }
 
-    public PlayerActions GrowInAnyDirectionIfNothingElse()
+
+    private PlayerActions GrowInAnyDirectionIfNothingElse()
     {
         DebugLog.INFO("GROW IN ANY DIRECTION");
         var myOrganisms = _arena.MyOrganisms;
@@ -542,7 +543,7 @@ public class Strategies
         return _player;
     }
 
-    public PlayerActions GrowTowardsClosestProteinSource()
+    private PlayerActions GrowTowardsClosestProteinSource()
     {
         DebugLog.INFO("GROW TOWARDS CLOSEST PROTEIN SOURCE");
         var myOrganisms = _arena.MyOrganisms;
@@ -599,7 +600,7 @@ public class Strategies
         return _player;
     }
 
-    public PlayerActions HarvestIfPossible()
+    private PlayerActions HarvestIfPossible()
     {
         var canHarvest = _arena.MyResources.C > 0 && _arena.MyResources.D > 0;
         if (!canHarvest)
@@ -650,7 +651,7 @@ public class Game
                 int.Parse(Console.ReadLine()!); // your number of organisms, output an action for each one in any order
 
             var actionPlayer = new PlayerActions(requiredActionsCount);
-            actionPlayer = new Strategies(arena, actionPlayer).GrowAndHarvest();
+            actionPlayer = new Strategies(arena, actionPlayer).Strategy_GrowAndHarvest();
             actionPlayer.Play();
         }
         // ReSharper disable once FunctionNeverReturns
