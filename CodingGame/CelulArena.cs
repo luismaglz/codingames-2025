@@ -9,6 +9,9 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 
+
+namespace CelulArena;
+
 // ReSharper disable CheckNamespace
 // ReSharper disable InconsistentNaming
 
@@ -101,7 +104,7 @@ public class Arena
             {
                 X = i % Width,
                 Y = i / Width,
-                Type = NodeType.EMPTY,
+                Type = NodeType.Empty,
                 Occupier = null
             };
 
@@ -112,16 +115,16 @@ public class Arena
             switch (entity.EntityType)
             {
                 case EntityType.WALL:
-                    _grid[index].Type = NodeType.WALL;
+                    _grid[index].Type = NodeType.Wall;
                     break;
                 case EntityType.A:
                 case EntityType.B:
                 case EntityType.C:
                 case EntityType.D:
-                    _grid[index].Type = NodeType.PROTEIN_SOURCE;
+                    _grid[index].Type = NodeType.ProteinSource;
                     break;
                 default:
-                    _grid[index].Type = NodeType.ORGANISM;
+                    _grid[index].Type = NodeType.Organism;
                     break;
             }
         }
@@ -151,7 +154,7 @@ public class Arena
 
                 var index = pos.Y * Width + pos.X;
                 var node = _grid[index];
-                if (node.Type == NodeType.EMPTY || node.Type == NodeType.PROTEIN_SOURCE) growableNodes.Add(node);
+                if (node.Type == NodeType.Empty || node.Type == NodeType.ProteinSource) growableNodes.Add(node);
             }
         }
 
@@ -160,7 +163,7 @@ public class Arena
 
     private Node[] UpdateResourceNodes()
     {
-        return _grid.Where(n => n.Type == NodeType.PROTEIN_SOURCE).ToArray();
+        return _grid.Where(n => n.Type == NodeType.ProteinSource).ToArray();
     }
 
     public Node[] SortNodesByDistanceTo(Node targetNode)
@@ -193,14 +196,6 @@ public static class Utilities
     {
         return CalculateDistance((a.X, a.Y), (b.X, b.Y));
     }
-}
-
-public enum NodeType
-{
-    EMPTY,
-    WALL,
-    ORGANISM,
-    PROTEIN_SOURCE
 }
 
 public abstract class BaseNode
@@ -371,7 +366,7 @@ public class Strategies
                 if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
                 var neighbor = grid[ny * width + nx];
                 if (visited[nx, ny] ||
-                    neighbor.Type == NodeType.WALL || (neighbor.Type == NodeType.ORGANISM &&
+                    neighbor.Type == NodeType.Wall || (neighbor.Type == NodeType.Organism &&
                                                        !(neighbor.X == goal.X && neighbor.Y == goal.Y)))
                     continue;
                 visited[nx, ny] = true;
@@ -410,7 +405,7 @@ public class Strategies
             X = closestOrgan.X,
             Y = closestOrgan.Y,
             Occupier = closestOrgan,
-            Type = NodeType.ORGANISM
+            Type = NodeType.Organism
         };
     }
 
@@ -484,7 +479,7 @@ public class Strategies
 
             var index = pos.Y * _arena.Width + pos.X;
             var gridNode = _arena.Grid[index];
-            if (gridNode.Type == NodeType.EMPTY || gridNode.Type == NodeType.PROTEIN_SOURCE)
+            if (gridNode.Type == NodeType.Empty || gridNode.Type == NodeType.ProteinSource)
                 growableNodes.Add(gridNode);
         }
 
@@ -577,7 +572,6 @@ public class ActionPlayer
         foreach (var actionSlot in actionSlots) actionSlot.Action.Play();
     }
 }
-
 
 /**
  * Grow and multiply your organisms to end up larger than your opponent.
