@@ -7,6 +7,7 @@ using System.Text;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 
 // ReSharper disable CheckNamespace
 // ReSharper disable InconsistentNaming
@@ -306,9 +307,12 @@ public class GrowAction : Action
 
 public static class DebugLog
 {
+    private static readonly bool enabled = false;
+
     public static void Log(string message)
     {
-        Console.Error.WriteLine(message);
+        if (enabled)
+            Console.Error.WriteLine(message);
     }
 }
 
@@ -327,6 +331,59 @@ public class Strategies
         _player = player;
     }
 
+    public List<BaseNode> FindShortestPath(BaseNode start, BaseNode goal, Arena arena)
+    {
+        var width = arena.Width;
+        var height = arena.Height;
+        var grid = arena.Grid;
+        var visited = new bool[width, height];
+        var cameFrom = new Dictionary<BaseNode, BaseNode>();
+        var queue = new Queue<BaseNode>();
+        queue.Enqueue(start);
+        visited[start.X, start.Y] = true;
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (current.X == goal.X && current.Y == goal.Y)
+            {
+                // Reconstruct path
+                var path = new List<BaseNode>();
+                while (current != start)
+                {
+                    path.Add(current);
+                    current = cameFrom[current];
+                }
+
+                path.Add(start);
+                path.Reverse();
+                return path;
+            }
+
+            var directions = new (int dx, int dy)[]
+            {
+                (1, 0), (-1, 0), (0, 1), (0, -1)
+            };
+
+            foreach (var (dx, dy) in directions)
+            {
+                int nx = current.X + dx, ny = current.Y + dy;
+                if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                var neighbor = grid[ny * width + nx];
+                if (visited[nx, ny] ||
+                    neighbor.Type == NodeType.WALL || (neighbor.Type == NodeType.ORGANISM &&
+                                                       !(neighbor.X == goal.X && neighbor.Y == goal.Y)))
+                    continue;
+                visited[nx, ny] = true;
+                cameFrom[neighbor] = current;
+                queue.Enqueue(neighbor);
+            }
+        }
+
+        DebugLog.Log("No path found from (" + start.X + "," + start.Y + ") to (" + goal.X + "," + goal.Y + ")");
+        return new List<BaseNode>(); // No path found
+    }
+
     public Node? GetClosestOrganToNode(Node node)
     {
         var myOrgans = _arena.MyOrgans;
@@ -336,7 +393,9 @@ public class Strategies
 
         foreach (var organ in myOrgans)
         {
-            var distance = Utilities.CalculateDistance(organ, node);
+            var distance = FindShortestPath(organ, node, _arena).Count;
+            if (distance == 0) continue;
+
             if (distance < closestDistance)
             {
                 closestDistance = distance;
@@ -371,7 +430,11 @@ public class Strategies
         foreach (var resourceNode in resourceNodes)
         foreach (var organ in myOrgans)
         {
-            var distance = Utilities.CalculateDistance(organ, resourceNode);
+            var distance = FindShortestPath(resourceNode, organ, _arena).Count;
+            DebugLog.Log("Distance from organ " + organ.OrganId + " to resource node at (" + resourceNode.X + "," +
+                         resourceNode.Y + "): " + distance);
+            if (distance == 0) continue;
+
             if (distance < closestDistance)
             {
                 closestDistance = distance;
@@ -477,7 +540,6 @@ public class Strategies
         DebugLog.Log($"Source organ to grow from: {sourceOrgan}");
 
         var nodesItCanGrowInto = GetNodesItCanGrowInto(sourceOrgan);
-
 
         DebugLog.Log($"nodes I can grow into from source organ: {nodesItCanGrowInto.Length}");
 
