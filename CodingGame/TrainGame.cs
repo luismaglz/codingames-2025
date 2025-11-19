@@ -94,8 +94,15 @@ namespace TrainGame;
 
 public static class DebugLog
 {
-    private static readonly bool InfoEnabled = false;
-    private static readonly bool DebugEnabled = false;
+    private static readonly bool InfoEnabled = true;
+    private static readonly bool DebugEnabled = true;
+    private static readonly bool CheckPointEnabled = true;
+
+    public static void CHECKPOINT(string message)
+    {
+        if (CheckPointEnabled)
+            Console.Error.WriteLine(message);
+    }
 
     public static void INFO(string message)
     {
@@ -219,6 +226,7 @@ public class GameArena
     private readonly GameNode[,] _grid;
     public int MyId;
     public int OppId;
+    public int turns;
 
     public GameArena()
     {
@@ -235,8 +243,6 @@ public class GameArena
         else
             OppId = 0;
 
-
-        DebugLog.DEBUG($"Height: {height}, Width: {width}, MyID: {myId}");
 
         for (var y = 0; y < height; y++)
         for (var x = 0; x < width; x++)
@@ -270,7 +276,6 @@ public class GameArena
             var townY = int.Parse(inputs[2]);
             var desiredConnections = inputs[3]; // comma-separated town ids e.g. 0,1,2,3
 
-            DebugLog.INFO($"Town ID: {townId} at ({townX},{townY}) desires connections to: {desiredConnections}");
 
             var desiredList = desiredConnections == "x"
                 ? new List<int>()
@@ -285,9 +290,6 @@ public class GameArena
 
             Towns = Towns.Append(town).ToList().AsReadOnly();
         }
-
-
-        DebugLog.INFO("Arena Initialized");
     }
 
     public ReadOnlyCollection<Town> Towns { get; internal set; } = new([]);
@@ -311,6 +313,63 @@ public class GameArena
 
             return nodeList.AsReadOnly();
         }
+    }
+
+    public List<int> GetEnemyPriorityRegions()
+    {
+        // get the cells that are parts of completed connections between towns
+        // get the regions of those cells
+        var regions = new HashSet<int>();
+        foreach (var node in Nodes)
+            if (node.PartOfActiveConnections != "x" && node.TracksOwner == OppId)
+                regions.Add(node.RegionId);
+
+        // sort by the region that has the most tracks owned by the enemy
+        var regionList = regions.ToList();
+        regionList.Sort((a, b) =>
+        {
+            var aCount = Nodes.Count(n => n.RegionId == a && n.TracksOwner == OppId);
+            var bCount = Nodes.Count(n => n.RegionId == b && n.TracksOwner == OppId);
+            return bCount.CompareTo(aCount);
+        });
+
+        regionList.AddRange(GetEnemyRegionsSortedByMostTracks());
+
+        // exclude regions that have towns
+        regionList = regionList.Where(rid => !Towns.Any(t => t.Location.RegionId == rid)).ToList();
+
+        return regionList;
+    }
+
+    public List<int> GetEnemyRegionsSortedByMostTracks()
+    {
+        // get all regions where the enemy has tracks
+        var regions = new HashSet<int>();
+        foreach (var node in Nodes)
+            if (node.TracksOwner == OppId)
+                regions.Add(node.RegionId);
+
+        // sort by the region that has the most tracks owned by the enemy
+        var regionList = regions.ToList();
+        regionList.Sort((a, b) =>
+        {
+            var aCount = Nodes.Count(n => n.RegionId == a && n.TracksOwner == OppId);
+            var bCount = Nodes.Count(n => n.RegionId == b && n.TracksOwner == OppId);
+            return bCount.CompareTo(aCount);
+        });
+
+        return regionList;
+    }
+
+    public List<GameNode> GetGameNodesThatAreCompletedConnectionsBetweenTowns()
+    {
+        // I want all the nodes that are part of active connections between towns
+        // I want my nodes specifically
+        var nodes = new List<GameNode>();
+        foreach (var node in Nodes)
+            if (node.PartOfActiveConnections != "x")
+                nodes.Add(node);
+        return nodes;
     }
 
 
@@ -381,51 +440,9 @@ public class GameArena
         return Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y);
     }
 
-    public List<GameNode> FindFbsPath(GameNode start, GameNode goal)
-    {
-        var visited = new bool[Width, Height];
-        var cameFrom = new Dictionary<(int, int), (int, int)>();
-        var queue = new Queue<GameNode>();
-        queue.Enqueue(start);
-        visited[start.X, start.Y] = true;
 
-        while (queue.Count > 0)
-        {
-            var current = queue.Dequeue();
-            if (current.X == goal.X && current.Y == goal.Y)
-            {
-                // Reconstruct path
-                var path = new List<GameNode>();
-                var pos = (goal.X, goal.Y);
-                while (pos != (start.X, start.Y))
-                {
-                    var node = GetNode(pos.Item1, pos.Item2);
-                    path.Add(node);
-                    pos = cameFrom[pos];
-                }
-
-                path.Add(start);
-                path.Reverse();
-                return path;
-            }
-
-            foreach (var neighbor in GetNeighbors(current))
-            {
-                int nx = neighbor.X, ny = neighbor.Y;
-                if (visited[nx, ny] || !(nx == goal.X && ny == goal.Y))
-                    continue;
-
-                visited[nx, ny] = true;
-                cameFrom[(nx, ny)] = (current.X, current.Y);
-                queue.Enqueue(neighbor);
-            }
-        }
-
-        DebugLog.INFO("No path found from (" + start.X + "," + start.Y + ") to (" + goal.X + "," + goal.Y + ")");
-        return new List<GameNode>(); // No path found
-    }
-
-    public List<GameNode> FindAStarPath(GameNode start, GameNode goal)
+    public List<GameNode> FindAStarPath(GameNode start, GameNode goal, bool aggressiveDisrupt,
+        List<GameNode>? nodesToExclude = null)
     {
         var openSet = new SortedSet<(int fScore, int x, int y)>();
         var cameFrom = new Dictionary<(int, int), (int, int)>();
@@ -441,6 +458,10 @@ public class GameArena
         openSet.Add((fScore[startPos], start.X, start.Y));
         inOpenSet.Add(startPos);
 
+        var excludeSet = nodesToExclude != null
+            ? new HashSet<(int, int)>(nodesToExclude.Select(n => (n.X, n.Y)))
+            : new HashSet<(int, int)>();
+
         while (openSet.Count > 0)
         {
             var currentTuple = openSet.Min;
@@ -449,7 +470,6 @@ public class GameArena
 
             if (currentPos == goalPos)
             {
-                // Reconstruct path
                 var path = new List<GameNode>();
                 var pos = goalPos;
                 while (pos != startPos)
@@ -468,9 +488,24 @@ public class GameArena
 
             foreach (var neighbor in GetNeighbors(currentNode))
             {
+                if (aggressiveDisrupt)
+                {
+                    if (neighbor.Instability == 3)
+                        continue;
+                }
+                else
+                {
+                    if (neighbor.Instability == 4)
+                        continue;
+                }
+
                 var neighborPos = (neighbor.X, neighbor.Y);
 
-                var tentativeGScore = gScore[currentPos] + 1;
+                if (excludeSet.Contains(neighborPos))
+                    continue;
+
+                // Use PaintCost as the movement cost
+                var tentativeGScore = gScore[currentPos] + neighbor.PaintCost;
                 if (!gScore.ContainsKey(neighborPos) || tentativeGScore < gScore[neighborPos])
                 {
                     cameFrom[neighborPos] = currentPos;
@@ -486,146 +521,14 @@ public class GameArena
             }
         }
 
-        DebugLog.INFO("No A* path found from (" + start.X + "," + start.Y + ") to (" + goal.X + "," + goal.Y + ")");
-        return new List<GameNode>(); // No path found
+        return new List<GameNode>();
     }
 
-    /// <summary>
-    ///     Given a dictionary of paths between locations,
-    ///     each entry in the dictionary contains a list of paths between 2 of the same locations
-    ///     We want to sort it by which ones share the most nodes in common
-    ///     The idea is that when we have overlapping paths, we can optimize movement or resource collection
-    ///     meaning the paths that would give me the most resources would be prioritized
-    /// </summary>
-    /// <param name="pathsBetweenLocations"></param>
-    /// <returns></returns>
-    public List<List<GameNode>> FindOverlappingPaths(List<List<GameNode>> pathsBetweenLocations)
-    {
-        var pathOverlapScores = new Dictionary<List<GameNode>, int>();
-
-        foreach (var pathA in pathsBetweenLocations)
-        foreach (var pathB in pathsBetweenLocations)
-        {
-            if (pathA == pathB) continue;
-
-            var overlapCount = pathA.Intersect(pathB).Count();
-            if (pathOverlapScores.ContainsKey(pathA))
-                pathOverlapScores[pathA] += overlapCount;
-            else
-                pathOverlapScores[pathA] = overlapCount;
-        }
-
-        var sortedPaths = pathOverlapScores.OrderByDescending(kv => kv.Value)
-            .Select(kv => kv.Key)
-            .ToList();
-
-        return sortedPaths;
-    }
-
-
-    public int GetAStarDistance(GameNode start, GameNode goal)
+    public int GetAStarDistance(GameNode start, GameNode goal, bool aggressiveDisrupt)
     {
         // if no path found return int.MaxValue
-        var path = FindAStarPath(start, goal);
+        var path = FindAStarPath(start, goal, aggressiveDisrupt);
         return path.Count == 0 ? int.MaxValue : path.Count - 1;
-    }
-
-    public int GetFsbDistance(GameNode start, GameNode goal)
-    {
-        // if no path found return int.MaxValue
-        var path = FindFbsPath(start, goal);
-        return path.Count == 0 ? int.MaxValue : path.Count - 1;
-    }
-
-    public List<GameNode> FindTspPath(List<GameNode> nodes)
-    {
-        if (nodes.Count == 0) return new List<GameNode>();
-
-        var visited = new HashSet<GameNode>();
-        var path = new List<GameNode>();
-        var current = nodes[0];
-        path.Add(current);
-        visited.Add(current);
-
-        while (visited.Count < nodes.Count)
-        {
-            GameNode? next = null;
-            var minDist = int.MaxValue;
-            foreach (var node in nodes)
-            {
-                if (visited.Contains(node)) continue;
-                var dist = GetAStarDistance(current, node);
-                if (dist < minDist)
-                {
-                    minDist = dist;
-                    next = node;
-                }
-            }
-
-            if (next != null)
-            {
-                path.Add(next);
-                visited.Add(next);
-                current = next;
-            }
-            else
-            {
-                break;
-            }
-        }
-
-        return path;
-    }
-
-    /// <summary>
-    ///     Finds a TSP path with restricted connections between nodes
-    /// </summary>
-    /// <param name="arena"></param>
-    /// <param name="nodes"></param>
-    /// <param name="allowedConnections"></param>
-    /// <returns></returns>
-    public List<GameNode> FindRestrictedTspPath(GameArena arena, List<GameNode> nodes,
-        Dictionary<GameNode, HashSet<GameNode>> allowedConnections)
-    {
-        if (nodes.Count == 0) return new List<GameNode>();
-
-        var visited = new HashSet<GameNode>();
-        var path = new List<GameNode>();
-        var current = nodes[0];
-        path.Add(current);
-        visited.Add(current);
-
-        while (visited.Count < nodes.Count)
-        {
-            GameNode? next = null;
-            var minDist = int.MaxValue;
-
-            foreach (var node in nodes)
-            {
-                if (visited.Contains(node)) continue;
-                if (!allowedConnections.TryGetValue(current, out var allowed) || !allowed.Contains(node)) continue;
-
-                var dist = arena.GetAStarDistance(current, node);
-                if (dist < minDist)
-                {
-                    minDist = dist;
-                    next = node;
-                }
-            }
-
-            if (next != null)
-            {
-                path.Add(next);
-                visited.Add(next);
-                current = next;
-            }
-            else
-            {
-                break; // No further allowed connections
-            }
-        }
-
-        return path;
     }
 }
 
@@ -648,11 +551,17 @@ public class Strategy
 
     public void StrategyA()
     {
+        var aggressiveDisrupt = _arena.turns > 50;
+
         // Connect towns by shortest distance first
         // Then disrupt enemy regions if possible
+        DebugLog.CHECKPOINT("StrategyA");
         ConnectByShortestDistance();
+        DebugLog.CHECKPOINT("ConnectByShortestDistance");
         DisruptIfWeCan();
+        DebugLog.CHECKPOINT("DisruptIfWeCan");
         WaitIfNoActions();
+        DebugLog.CHECKPOINT("WaitIfNoActions");
     }
 
     private void WaitIfNoActions()
@@ -666,14 +575,16 @@ public class Strategy
 
     private void DisruptIfWeCan()
     {
-        var enemyTracks = _arena.Nodes.Where(c => c.TracksOwner == _arena.OppId).ToList();
         var myTracks = _arena.Nodes.Where(c => c.TracksOwner == _arena.MyId).ToList();
 
-        var enemyRegions = enemyTracks.Select(t => t.RegionId).Distinct().ToList();
+        var enemyRegions = _arena.GetEnemyPriorityRegions();
         var myRegions = myTracks.Select(t => t.RegionId).Distinct().ToList();
+
+        foreach (var enemyRegion in enemyRegions) DebugLog.DEBUG($"Enemy region candidate: {enemyRegion}");
 
         // find regions where enemy has tracks but we don't
         var candidateRegions = enemyRegions.Except(myRegions).ToList();
+        candidateRegions.ForEach(x => { DebugLog.INFO($"Enemy has tracks in region {x}"); });
         foreach (var regionId in candidateRegions)
         {
             var regionNodes = _arena.Nodes.Where(n => n.RegionId == regionId).ToList();
@@ -689,7 +600,7 @@ public class Strategy
         }
     }
 
-    private void ConnectByShortestDistance()
+    private void ConnectByShortestDistance(bool aggressiveDisrupt = false)
     {
         var currentPoints = PaintPoints;
         var towns = _arena.Towns;
@@ -702,7 +613,7 @@ public class Strategy
         {
             if (townA == townB) continue;
             if (!townA.DesiredConnections.Contains(townB.TownId)) continue;
-            var distance = _arena.GetAStarDistance(townA.Location, townB.Location);
+            var distance = _arena.GetAStarDistance(townA.Location, townB.Location, aggressiveDisrupt);
             townPairs.Add((townA.Location, townB.Location, distance));
         }
 
@@ -711,20 +622,13 @@ public class Strategy
         var sortedTownPairs = townPairs.OrderBy(tp => tp.Item3).ToList();
         foreach (var (startTown, endTown, distance) in sortedTownPairs)
         {
-            DebugLog.INFO($"Considering town pair: {startTown} to {endTown} with distance {distance}");
-            var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown);
+            var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown, aggressiveDisrupt);
 
             // place tracks as long as we have points
             foreach (var gameNode in pathBetweenTowns)
             {
-                if (townNodes.Contains(gameNode) || gameNode.TracksOwner != -1)
-                {
-                    DebugLog.DEBUG($"Skipping node at {gameNode.X},{gameNode.Y}");
-                    continue;
-                }
+                if (townNodes.Contains(gameNode) || gameNode.TracksOwner != -1) continue;
 
-                DebugLog.DEBUG(
-                    $"Paint cost for node {gameNode.X},{gameNode.Y} is {gameNode.PaintCost}, current points: {currentPoints}");
                 if (gameNode.PaintCost <= currentPoints)
                 {
                     Actions.Add(new PlaceTracks { X = gameNode.X, Y = gameNode.Y });
@@ -741,48 +645,6 @@ public class Strategy
         }
     }
 
-    public void UseTravelingSalesmanToOptimizeTrack()
-    {
-        var currentPoints = PaintPoints;
-        var towns = _arena.Towns.Select(town => town.Location);
-
-        foreach (var gameNode in towns) DebugLog.INFO("Towns: " + gameNode);
-
-        var bestPathBetweenTowns = _arena.FindTspPath(towns.ToList());
-
-        foreach (var path in bestPathBetweenTowns) DebugLog.INFO(path.ToString());
-
-        // for each town tuple find the path between them and place tracks
-        for (var i = 0; i < bestPathBetweenTowns.Count - 1; i++)
-        {
-            var startTown = bestPathBetweenTowns[i];
-            var endTown = bestPathBetweenTowns[i + 1];
-
-            DebugLog.INFO(startTown.ToString());
-            DebugLog.INFO(endTown.ToString());
-
-            var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown);
-
-            // foreach (var node in pathBetweenTowns) DebugLog.INFO(node.ToString());
-
-            // place tracks as long as we have points
-            foreach (var gameNode in pathBetweenTowns)
-            {
-                if (towns.Contains(gameNode)) continue;
-                if (gameNode.PaintCost <= currentPoints)
-                {
-                    Actions.Add(new PlaceTracks { X = gameNode.X, Y = gameNode.Y });
-                    DebugLog.INFO($"Placed track {gameNode.X},{gameNode.Y}");
-                    currentPoints -= gameNode.PaintCost;
-                    DebugLog.INFO($"Paint cost: {gameNode.PaintCost}");
-                }
-                else
-                {
-                    break;
-                }
-            }
-        }
-    }
 
     public void Play()
     {
@@ -897,6 +759,7 @@ internal class Player
         // game loop
         while (true)
         {
+            arena.turns++;
             arena.UpdateScores();
             // for (var i = 0; i < arena.Height; i++)
             // for (var j = 0; j < arena.Width; j++)
