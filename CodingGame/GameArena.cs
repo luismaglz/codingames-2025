@@ -10,7 +10,10 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 
-public static class DebugLog
+
+namespace CelGame;
+
+internal static class DebugLog
 {
     private static readonly bool InfoEnabled = false;
     private static readonly bool DebugEnabled = false;
@@ -36,7 +39,6 @@ public static class Values
     public static readonly HashSet<string> OrganismTypes =
         new() { EntityType.Basic, EntityType.Root, EntityType.Tentacle, EntityType.Harvester, EntityType.Sporer };
 }
-
 
 public class Coordinate
 {
@@ -439,11 +441,142 @@ public class GameArena
         return new List<GameNode>(); // No path found
     }
 
+    /// <summary>
+    ///     Given a dictionary of paths between locations,
+    ///     each entry in the dictionary contains a list of paths between 2 of the same locations
+    ///     We want to sort it by which ones share the most nodes in common
+    ///     The idea is that when we have overlapping paths, we can optimize movement or resource collection
+    ///     meaning the paths that would give me the most resources would be prioritized
+    /// </summary>
+    /// <param name="pathsBetweenLocations"></param>
+    /// <returns></returns>
+    public List<List<GameNode>> FindOverlappingPaths(List<List<GameNode>> pathsBetweenLocations)
+    {
+        var pathOverlapScores = new Dictionary<List<GameNode>, int>();
+
+        foreach (var pathA in pathsBetweenLocations)
+        foreach (var pathB in pathsBetweenLocations)
+        {
+            if (pathA == pathB) continue;
+
+            var overlapCount = pathA.Intersect(pathB).Count();
+            if (pathOverlapScores.ContainsKey(pathA))
+                pathOverlapScores[pathA] += overlapCount;
+            else
+                pathOverlapScores[pathA] = overlapCount;
+        }
+
+        var sortedPaths = pathOverlapScores.OrderByDescending(kv => kv.Value)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        return sortedPaths;
+    }
+
+
+    public int GetAStarDistance(GameNode start, GameNode goal)
+    {
+        // if no path found return int.MaxValue
+        var path = FindAStarPath(start, goal);
+        return path.Count == 0 ? int.MaxValue : path.Count - 1;
+    }
+
     public int GetFsbDistance(GameNode start, GameNode goal)
     {
         // if no path found return int.MaxValue
         var path = FindFbsPath(start, goal);
         return path.Count == 0 ? int.MaxValue : path.Count - 1;
+    }
+
+    public List<GameNode> FindTspPath(GameArena arena, List<GameNode> nodes)
+    {
+        if (nodes.Count == 0) return new List<GameNode>();
+
+        var visited = new HashSet<GameNode>();
+        var path = new List<GameNode>();
+        var current = nodes[0];
+        path.Add(current);
+        visited.Add(current);
+
+        while (visited.Count < nodes.Count)
+        {
+            GameNode? next = null;
+            var minDist = int.MaxValue;
+            foreach (var node in nodes)
+            {
+                if (visited.Contains(node)) continue;
+                var dist = arena.GetAStarDistance(current, node);
+                if (dist < minDist)
+                {
+                    minDist = dist;
+                    next = node;
+                }
+            }
+
+            if (next != null)
+            {
+                path.Add(next);
+                visited.Add(next);
+                current = next;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        return path;
+    }
+
+    /// <summary>
+    ///     Finds a TSP path with restricted connections between nodes
+    /// </summary>
+    /// <param name="arena"></param>
+    /// <param name="nodes"></param>
+    /// <param name="allowedConnections"></param>
+    /// <returns></returns>
+    public List<GameNode> FindRestrictedTspPath(GameArena arena, List<GameNode> nodes,
+        Dictionary<GameNode, HashSet<GameNode>> allowedConnections)
+    {
+        if (nodes.Count == 0) return new List<GameNode>();
+
+        var visited = new HashSet<GameNode>();
+        var path = new List<GameNode>();
+        var current = nodes[0];
+        path.Add(current);
+        visited.Add(current);
+
+        while (visited.Count < nodes.Count)
+        {
+            GameNode? next = null;
+            var minDist = int.MaxValue;
+
+            foreach (var node in nodes)
+            {
+                if (visited.Contains(node)) continue;
+                if (!allowedConnections.TryGetValue(current, out var allowed) || !allowed.Contains(node)) continue;
+
+                var dist = arena.GetAStarDistance(current, node);
+                if (dist < minDist)
+                {
+                    minDist = dist;
+                    next = node;
+                }
+            }
+
+            if (next != null)
+            {
+                path.Add(next);
+                visited.Add(next);
+                current = next;
+            }
+            else
+            {
+                break; // No further allowed connections
+            }
+        }
+
+        return path;
     }
 }
 
