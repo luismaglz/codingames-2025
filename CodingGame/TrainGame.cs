@@ -1,5 +1,6 @@
 // ReSharper disable RedundantUsingDirective
 // ReSharper disable CheckNamespace
+// 36.7
 
 using System;
 using System.Linq;
@@ -103,7 +104,7 @@ internal class ConnectionTracker
 public static class DebugLog
 {
     private static readonly bool InfoEnabled = false;
-    private static readonly bool DebugEnabled = false;
+    private static readonly bool DebugEnabled = true;
     private static readonly bool CheckPointEnabled = false;
 
     public static void CHECKPOINT(string message)
@@ -461,7 +462,7 @@ public class GameArena
         if (regions.Count == 0) regions.AddRange(GetPrioritySharedRegions(true));
 
         if (regions.Count == 0) regions.AddRange(GetEnemyRegionsSortedByMostTracks());
-        
+
         // exclude regions that have towns
         regions = regions.Where(rid => !Towns.Any(t => t.Location.RegionId == rid)).ToList();
         return regions.ToList();
@@ -623,7 +624,9 @@ public class GameArena
                     continue;
 
                 // Use PaintCost as the movement cost
-                var tentativeGScore = gScore[currentPos] + neighbor.PaintCost;
+                // Use PaintCost and Instability as the movement cost
+                var movementCost = neighbor.PaintCost;
+                var tentativeGScore = gScore[currentPos] + movementCost;
                 if (!gScore.ContainsKey(neighborPos) || tentativeGScore < gScore[neighborPos])
                 {
                     cameFrom[neighborPos] = currentPos;
@@ -646,7 +649,11 @@ public class GameArena
     {
         // if no path found return int.MaxValue
         var path = FindAStarPath(start, goal, nodesToExclude);
-        return path.Count == 0 ? int.MaxValue : path.Count - 1;
+
+        //count should be sum of the cost
+        if (path.Count == 0) return int.MaxValue;
+        var totalCost = path.Sum(n => n.PaintCost);
+        return totalCost;
     }
 }
 
@@ -735,6 +742,7 @@ public class Strategy
             if (townA == townB) continue;
             if (!townA.DesiredConnections.Contains(townB.TownId)) continue;
             var distance = _arena.GetAStarDistance(townA.Location, townB.Location, nodesToExclude);
+            DebugLog.DEBUG($"Distance: {distance} between Town {townA.TownId} and Town {townB.TownId}");
             townPairs.Add((townA.Location, townB.Location, distance));
         }
 
