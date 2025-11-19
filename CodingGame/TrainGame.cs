@@ -240,7 +240,7 @@ public class GameNode : Coordinate
 
     public override string ToString()
     {
-        return $"Node[X={X}, Y={Y}";
+        return $"Node[X={X}, Y={Y}] Owner:{TracksOwner}";
     }
 }
 
@@ -695,10 +695,8 @@ public class GameArena
 
 public class Strategy
 {
-    public const int PaintPoints = 3;
-    public const int DisruptionPoints = 1;
-
     private readonly GameArena _arena;
+    private int PaintPoints = 3;
 
     public Strategy(GameArena arena)
     {
@@ -726,11 +724,34 @@ public class Strategy
         DebugLog.CHECKPOINT("WaitIfNoActions");
     }
 
-    public void StrategyTylar()
+    public void BuildBackBetter()
     {
-        ConnectByShortestDistanceV2();
+        ConnectByShortestDistance();
         DisruptIfWeCan();
+        PlaceTrackInRandomEmptySquare();
         WaitIfNoActions();
+    }
+
+
+    private void PlaceTrackInRandomEmptySquare()
+    {
+        // while we have points, place track on random empty square
+        var rand = new Random();
+        var emptySquares = _arena.Nodes.Where(n => n.TracksOwner == -1 && n.Instability < 4).ToList();
+        var towns = _arena.Towns.Select(t => t.Location).ToList();
+        emptySquares = emptySquares.Where(s => !towns.Contains(s)).ToList();
+        while (PaintPoints > 0 && emptySquares.Count > 0)
+        {
+            var index = rand.Next(emptySquares.Count);
+            var square = emptySquares[index];
+            if (square.PaintCost <= PaintPoints)
+            {
+                Actions.Add(new PlaceTracks { X = square.X, Y = square.Y });
+                PaintPoints -= square.PaintCost;
+            }
+
+            emptySquares.RemoveAt(index);
+        }
     }
 
     private void WaitIfNoActions()
@@ -769,9 +790,9 @@ public class Strategy
         }
     }
 
-    private void ConnectByShortestDistance(List<GameNode> nodesToExclude = null)
+    private void ConnectByShortestDistance(List<GameNode> nodesToExclude = null, bool scramblePath = false,
+        bool useExistingInDistanceCalc = false)
     {
-        var currentPoints = PaintPoints;
         var towns = _arena.Towns;
 
 
@@ -782,8 +803,12 @@ public class Strategy
         {
             if (townA == townB) continue;
             if (!townA.DesiredConnections.Contains(townB.TownId)) continue;
-            var distance = _arena.GetAStarDistance(townA.Location, townB.Location, nodesToExclude);
-            DebugLog.DEBUG($"Distance: {distance} between Town {townA.TownId} and Town {townB.TownId}");
+            var distance = 0;
+            if (useExistingInDistanceCalc)
+                distance = _arena.GetAStarDistanceMinusExisting(townA.Location, townB.Location, nodesToExclude);
+            else
+                distance = _arena.GetAStarDistance(townA.Location, townB.Location, nodesToExclude);
+
             townPairs.Add((townA.Location, townB.Location, distance));
         }
 
@@ -794,60 +819,24 @@ public class Strategy
         {
             var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown, nodesToExclude);
 
-            // place tracks as long as we have points
-            foreach (var gameNode in pathBetweenTowns)
-            {
-                if (townNodes.Contains(gameNode) || gameNode.TracksOwner != -1) continue;
-
-                if (gameNode.PaintCost <= currentPoints)
-                {
-                    Actions.Add(new PlaceTracks { X = gameNode.X, Y = gameNode.Y });
-                    currentPoints -= gameNode.PaintCost;
-                }
-                else
-                {
-                    // DebugLog.INFO($"Not enough paint points to place track at {gameNode.X},{gameNode.Y}");
-                    break;
-                }
-            }
-        }
-    }
-
-    private void ConnectByShortestDistanceV2(List<GameNode> nodesToExclude = null)
-    {
-        var currentPoints = PaintPoints;
-        var towns = _arena.Towns;
-
-
-        // find town pairs with shortest distance
-        var townPairs = new List<(GameNode, GameNode, int)>();
-        foreach (var townA in towns)
-        foreach (var townB in towns)
-        {
-            if (townA == townB) continue;
-            if (!townA.DesiredConnections.Contains(townB.TownId)) continue;
-            var distance = _arena.GetAStarDistanceMinusExisting(townA.Location, townB.Location, nodesToExclude);
-            DebugLog.DEBUG($"Distance: {distance} between Town {townA.TownId} and Town {townB.TownId}");
-            townPairs.Add((townA.Location, townB.Location, distance));
-        }
-
-        var townNodes = towns.Select(t => t.Location);
-
-        var sortedTownPairs = townPairs.OrderBy(tp => tp.Item3).ToList();
-        foreach (var (startTown, endTown, distance) in sortedTownPairs)
-        {
-            var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown, nodesToExclude);
-
+            if (scramblePath)
+                // scramble the path 
+                pathBetweenTowns = pathBetweenTowns.OrderBy(n => Guid.NewGuid()).ToList();
 
             // place tracks as long as we have points
             foreach (var gameNode in pathBetweenTowns)
             {
-                if (townNodes.Contains(gameNode) || gameNode.TracksOwner != -1) continue;
+                if (gameNode.X == 9 && gameNode.Y == 8) DebugLog.DEBUG($"Node: {gameNode}");
+                if (townNodes.Contains(gameNode) || gameNode.TracksOwner != -1 ||
+                    townNodes.Contains(gameNode)) continue;
 
-                if (gameNode.PaintCost <= currentPoints)
+                if (gameNode.PaintCost <= PaintPoints)
                 {
+                    if (Actions.Any(a => a is PlaceTracks pt && pt.X == gameNode.X && pt.Y == gameNode.Y))
+                        // already planning to place track here
+                        continue;
                     Actions.Add(new PlaceTracks { X = gameNode.X, Y = gameNode.Y });
-                    currentPoints -= gameNode.PaintCost;
+                    PaintPoints -= gameNode.PaintCost;
                 }
                 else
                 {
@@ -955,7 +944,7 @@ internal class Player
             arena.UpdateCellStatus();
 
             var strategy = new Strategy(arena);
-            strategy.StrategyTylar();
+            strategy.BuildBackBetter();
             strategy.Play();
         }
     }
