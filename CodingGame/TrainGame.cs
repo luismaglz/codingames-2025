@@ -93,6 +93,85 @@ using System.Diagnostics;
 
 namespace TrainGame;
 
+public enum RegionOwner
+{
+    None = -1,
+    Me = 0,
+    Opponent = 1,
+    Shared = 2
+}
+
+public class Region
+{
+    private bool _containsTown;
+    private RegionOwner _regionOwner = RegionOwner.None;
+
+    public Region(int regionId)
+    {
+        RegionId = regionId;
+    }
+
+    public int RegionId { get; }
+    public int Instability { get; set; }
+    public bool Inked { get; set; }
+    public List<GameNode> Cells { get; } = new();
+
+    public bool ContainsTown
+    {
+        get => _containsTown;
+        set
+        {
+            if (value)
+                _containsTown = true;
+            // Ignore attempts to set to false
+        }
+    }
+
+    public RegionOwner RegionOwner
+    {
+        get => _regionOwner;
+        set
+        {
+            switch (value)
+            {
+                case RegionOwner.Me:
+                    if (_regionOwner == RegionOwner.Opponent)
+                        _regionOwner = RegionOwner.Shared;
+                    else if (_regionOwner == RegionOwner.None)
+                        _regionOwner = RegionOwner.Me;
+                    break;
+                case RegionOwner.Opponent:
+                    if (_regionOwner == RegionOwner.Me)
+                        _regionOwner = RegionOwner.Shared;
+                    else if (_regionOwner == RegionOwner.None)
+                        _regionOwner = RegionOwner.Opponent;
+                    break;
+                case RegionOwner.Shared:
+                    _regionOwner = RegionOwner.Shared;
+                    break;
+                case RegionOwner.None:
+                    // do nothing
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
+        }
+    }
+
+    public void UpdateFromCell(GameNode cell)
+    {
+        Instability = cell.Instability > Instability ? cell.Instability : Instability;
+        Inked = cell.Inked;
+        Cells.Add(cell);
+    }
+
+    public override string ToString()
+    {
+        return
+            $"Region[Id={RegionId}, Instability={Instability}, Inked={Inked}, CellCount={Cells.Count}] Owner={RegionOwner}";
+    }
+}
+
 internal class ConnectionTracker
 {
     private int _totalInstability;
@@ -143,7 +222,7 @@ internal class RegionScore
 public static class DebugLog
 {
     private static readonly bool InfoEnabled = false;
-    private static readonly bool DebugEnabled = false;
+    private static readonly bool DebugEnabled = true;
     private static readonly bool CheckPointEnabled = false;
 
     public static void CHECKPOINT(string message)
@@ -276,6 +355,7 @@ public class GameArena
     private readonly GameNode[,] _grid;
     public int MyId;
     public int OppId;
+    public Dictionary<int, Region> Regions = new();
     public int SharedId = 2;
 
     public GameArena()
@@ -287,7 +367,7 @@ public class GameArena
         Width = width;
         Height = height;
         _grid = new GameNode[width, height];
-        myId = myId;
+        MyId = myId;
         if (myId == 0)
             OppId = 1;
         else
@@ -363,19 +443,6 @@ public class GameArena
 
             return nodeList.AsReadOnly();
         }
-    }
-
-    public List<int> GetMyRegionsWherIHaveCompletedConnections(int riskThreshold = 0)
-    {
-        // get the cells that are parts of completed connections between towns
-        // get the regions of those cells
-        var regions = new HashSet<int>();
-        foreach (var node in Nodes)
-            if (node.PartOfActiveConnections != "x" && node.TracksOwner == MyId)
-                regions.Add(node.RegionId);
-
-
-        return regions.ToList();
     }
 
     public List<GameNode> NodesWithActiveConnectionsByOwner(int ownerId)
@@ -537,6 +604,9 @@ public class GameArena
 
     public void UpdateCellStatus()
     {
+        // Reset Regions dictionary
+        Regions = new Dictionary<int, Region>();
+
         string[] inputs;
         for (var y = 0; y < Height; y++)
         for (var x = 0; x < Width; x++)
@@ -555,6 +625,24 @@ public class GameArena
             cell.Instability = instability;
             cell.Inked = inked;
             cell.PartOfActiveConnections = partOfActiveConnections;
+
+            // Update Regions dictionary
+            if (!Regions.ContainsKey(cell.RegionId))
+                Regions[cell.RegionId] = new Region(cell.RegionId);
+            Regions[cell.RegionId].UpdateFromCell(cell);
+            Regions[cell.RegionId].RegionOwner = tracksOwner switch
+            {
+                var owner when owner == MyId => RegionOwner.Me,
+                var owner when owner == OppId => RegionOwner.Opponent,
+                var owner when owner == SharedId => RegionOwner.Shared,
+                _ => RegionOwner.None
+            };
+        }
+
+        foreach (var town in Towns)
+        {
+            var node = town.Location;
+            Regions[node.RegionId].ContainsTown = true;
         }
     }
 
@@ -649,11 +737,10 @@ public class GameArena
                 if (excludeSet.Contains(neighborPos))
                     continue;
 
-                // Use PaintCost as the movement cost
-                // Use PaintCost and Instability as the movement cost
+                // Favor nodes in regions with towns
                 var movementCost = neighbor.PaintCost;
-                // if(neighbor.TracksOwner == OppId)
-                //     movementCost += 2; // penalize enemy owned tracks
+                if (Regions[neighbor.RegionId].ContainsTown)
+                    movementCost = Math.Max(1, movementCost - 1);
                 var tentativeGScore = gScore[currentPos] + movementCost;
                 if (!gScore.ContainsKey(neighborPos) || tentativeGScore < gScore[neighborPos])
                 {
@@ -718,11 +805,6 @@ public class Strategy
         DebugLog.CHECKPOINT("ConnectByShortestDistance");
         DisruptIfWeCan();
 
-        // if (Actions.Count == 0)
-        // {
-        //     var atRiskNodes = _arena.MyAtRiskNodes(2);
-        //     ConnectByShortestDistance();
-        // }
 
         DebugLog.CHECKPOINT("DisruptIfWeCan");
         WaitIfNoActions();
@@ -731,9 +813,17 @@ public class Strategy
 
     public void BuildBackBetter()
     {
+        DebugLog.CHECKPOINT("BuildBackBetter");
+
         ConnectByShortestDistance();
+        DebugLog.CHECKPOINT("ConnectByShortestDistance");
+
         DisruptIfWeCan();
+        DebugLog.CHECKPOINT("DisruptIfWeCan");
+
         PlaceTrackInRandomEmptySquare();
+        DebugLog.CHECKPOINT("PlaceRandomSquare");
+
         WaitIfNoActions();
     }
 
@@ -770,29 +860,22 @@ public class Strategy
 
     private void DisruptIfWeCan()
     {
-        var myTracks = _arena.Nodes.Where(c => c.TracksOwner == _arena.MyId).ToList();
+        DebugLog.DEBUG("DisruptIfWeCan");
+        // DebugLog.DEBUG(string.Join(",", _arena.Regions.Keys));
+        DebugLog.DEBUG(_arena.Regions[9].ToString());
+        var enemyRegions = _arena.Regions.Values.Where(r => r.RegionOwner == RegionOwner.Opponent && !r.ContainsTown)
+            .ToList();
 
-        var enemyRegions = _arena.GetEnemyPriorityRegionsV2();
-        var myRegions = myTracks.Select(t => t.RegionId).Distinct().ToList();
 
         foreach (var enemyRegion in enemyRegions) DebugLog.DEBUG($"Enemy region candidate: {enemyRegion}");
 
-        // find regions where enemy has tracks but we don't
-        var candidateRegions = enemyRegions.Except(myRegions).ToList();
-        candidateRegions.ForEach(x => { DebugLog.INFO($"Enemy has tracks in region {x}"); });
-        foreach (var regionId in candidateRegions)
-        {
-            var regionNodes = _arena.Nodes.Where(n => n.RegionId == regionId).ToList();
-            var regionInstability = regionNodes.First().Instability;
-            var regionInked = regionNodes.First().Inked;
-
-            if (!regionInked && regionInstability <= 3)
+        foreach (var region in enemyRegions)
+            if (!region.Inked && region.Instability <= 3)
             {
-                Actions.Add(new DisruptRegion(regionId.ToString()));
-                DebugLog.INFO($"Disrupting region {regionId} at ({regionNodes[0].X},{regionNodes[0].Y})");
+                Actions.Add(new DisruptRegion(region.RegionId.ToString()));
+                DebugLog.INFO($"Disrupting region {region.RegionId}");
                 break; // only disrupt one region per turn
             }
-        }
     }
 
     private void ConnectByShortestDistance(List<GameNode> nodesToExclude = null, bool scramblePath = false,
