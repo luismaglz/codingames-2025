@@ -93,6 +93,31 @@ using System.Diagnostics;
 
 namespace TrainGame;
 
+public static class DebugLog
+{
+    private static readonly bool InfoEnabled = false;
+    private static readonly bool DebugEnabled = true;
+    private static readonly bool CheckPointEnabled = false;
+
+    public static void CHECKPOINT(string message)
+    {
+        if (CheckPointEnabled)
+            Console.Error.WriteLine(message);
+    }
+
+    public static void INFO(string message)
+    {
+        if (InfoEnabled)
+            Console.Error.WriteLine(message);
+    }
+
+    public static void DEBUG(string message)
+    {
+        if (DebugEnabled)
+            Console.Error.WriteLine(message);
+    }
+}
+
 public enum RegionOwner
 {
     None = -1,
@@ -217,31 +242,6 @@ internal class RegionScore
 {
     public int RegionId;
     public int Score;
-}
-
-public static class DebugLog
-{
-    private static readonly bool InfoEnabled = false;
-    private static readonly bool DebugEnabled = true;
-    private static readonly bool CheckPointEnabled = false;
-
-    public static void CHECKPOINT(string message)
-    {
-        if (CheckPointEnabled)
-            Console.Error.WriteLine(message);
-    }
-
-    public static void INFO(string message)
-    {
-        if (InfoEnabled)
-            Console.Error.WriteLine(message);
-    }
-
-    public static void DEBUG(string message)
-    {
-        if (DebugEnabled)
-            Console.Error.WriteLine(message);
-    }
 }
 
 public class Coordinate
@@ -459,7 +459,7 @@ public class GameArena
     }
 
 
-    public List<int> GetPriorityRegions(bool targetShared = false)
+    public List<int> GetRegionsOfDisputedConnections()
     {
         // get all connections that have enemy nodes
         var enemyNodesPartOfActiveConnections = NodesWithActiveConnectionsByOwner(OppId);
@@ -492,7 +492,6 @@ public class GameArena
         foreach (var connectionTrackersValue in connectionTrackers.Values)
             DebugLog.DEBUG(connectionTrackersValue.ToString());
 
-
         // connections with a kill priority > 0
         var connectionsToKill = connectionTrackers.Values.ToList().Where(ct => ct.KillPriority() > 0).ToList();
 
@@ -513,83 +512,6 @@ public class GameArena
         });
 
         return sortedRegions;
-    }
-
-
-    public List<int> GetEnemyPriorityRegions()
-    {
-        // get the cells that are parts of completed connections between towns
-        // get the regions of those cells
-        var regions = new HashSet<int>();
-        foreach (var node in Nodes)
-            if (node.PartOfActiveConnections != "x" && node.TracksOwner == OppId)
-                regions.Add(node.RegionId);
-
-        // sort by the region that has the most tracks owned by the enemy
-        var regionList = regions.ToList();
-        regionList.Sort((a, b) =>
-        {
-            var aCount = Nodes.Count(n => n.RegionId == a && n.TracksOwner == OppId);
-            var bCount = Nodes.Count(n => n.RegionId == b && n.TracksOwner == OppId);
-            return bCount.CompareTo(aCount);
-        });
-
-        regionList.AddRange(GetEnemyRegionsSortedByMostTracks());
-
-        // exclude regions that have towns
-        regionList = regionList.Where(rid => !Towns.Any(t => t.Location.RegionId == rid)).ToList();
-
-        return regionList;
-    }
-
-    public List<int> GetEnemyPriorityRegionsV2()
-    {
-        // get all regions where the enemy has tracks
-        var regions = GetPriorityRegions();
-
-        if (regions.Count == 0) regions.AddRange(GetPriorityRegions(true));
-
-        if (regions.Count == 0) regions.AddRange(GetEnemyRegionsSortedByMostTracks());
-
-        // exclude regions that have towns
-        regions = regions.Where(rid => !Towns.Any(t => t.Location.RegionId == rid)).ToList();
-        return regions.ToList();
-    }
-
-    public List<int> GetEnemyRegionsSortedByMostTracks()
-    {
-        // get all regions where the enemy has tracks
-        var regions = new HashSet<int>();
-        foreach (var node in Nodes.Where(n => n.Instability < 4 && n.TracksOwner == OppId))
-            regions.Add(node.RegionId);
-
-        // sort by the region that has the most tracks owned by the enemy
-        var regionList = regions.ToList();
-
-        // sort by most tracks and highest instability
-        regionList.Sort((a, b) =>
-        {
-            var aCount = Nodes.Count(n => n.RegionId == a && n.TracksOwner == OppId);
-            var bCount = Nodes.Count(n => n.RegionId == b && n.TracksOwner == OppId);
-            if (bCount != aCount)
-                return bCount.CompareTo(aCount);
-            var aInstability = Nodes.First(n => n.RegionId == a).Instability;
-            var bInstability = Nodes.First(n => n.RegionId == b).Instability;
-            return bInstability.CompareTo(aInstability);
-        });
-
-        return regionList;
-    }
-
-    public List<GameNode> GetGameNodesThatAreCompletedConnectionsBetweenTowns()
-    {
-        // I want all the nodes that are part of active connections between towns
-        // I want my nodes specifically
-        var nodes = new List<GameNode>();
-        foreach (var node in Nodes)
-            if (node.PartOfActiveConnections != "x")
-                nodes.Add(node);
-        return nodes;
     }
 
 
@@ -861,11 +783,10 @@ public class Strategy
     private void DisruptIfWeCan()
     {
         DebugLog.DEBUG("DisruptIfWeCan");
-        // DebugLog.DEBUG(string.Join(",", _arena.Regions.Keys));
+
         DebugLog.DEBUG(_arena.Regions[9].ToString());
         var enemyRegions = _arena.Regions.Values.Where(r => r.RegionOwner == RegionOwner.Opponent && !r.ContainsTown)
             .ToList();
-
 
         foreach (var enemyRegion in enemyRegions) DebugLog.DEBUG($"Enemy region candidate: {enemyRegion}");
 
@@ -876,6 +797,25 @@ public class Strategy
                 DebugLog.INFO($"Disrupting region {region.RegionId}");
                 break; // only disrupt one region per turn
             }
+
+        var regions = _arena.GetRegionsOfDisputedConnections();
+
+        if (regions.Count == 0)
+        {
+            DebugLog.DEBUG("No disputed regions found.");
+            return;
+        }
+
+        foreach (var regionId in regions)
+        {
+            var region = _arena.Regions[regionId];
+            if (!region.Inked && region.Instability <= 3)
+            {
+                Actions.Add(new DisruptRegion(region.RegionId.ToString()));
+                DebugLog.INFO($"Disrupting disputed region {region.RegionId}");
+                break; // only disrupt one region per turn
+            }
+        }
     }
 
     private void ConnectByShortestDistance(List<GameNode> nodesToExclude = null, bool scramblePath = false,
