@@ -95,12 +95,24 @@ namespace TrainGame;
 
 internal class ConnectionTracker
 {
+    private int _totalInstability;
     public List<GameNode> EnemyNodes = new();
 
     public List<GameNode> MyNodes = new();
 
-    public List<int> RegionIds = new();
+    public HashSet<int> RegionIds = new();
     public List<GameNode> SharedNodes = new();
+
+    public int TotalInstability
+    {
+        set
+        {
+            if (value > _totalInstability) _totalInstability = value;
+        }
+
+        get => _totalInstability;
+    }
+
 
     public int EnemyPoints => EnemyNodes.Count;
     public int MyPoints => MyNodes.Count;
@@ -110,9 +122,15 @@ internal class ConnectionTracker
 
     public int KillPriority()
     {
-        if (EnemyPoints > MyPoints) return EnemyPoints - MyPoints;
+        if (EnemyPoints > MyPoints) return EnemyPoints - MyPoints + TotalInstability;
 
         return -1;
+    }
+
+    public override string ToString()
+    {
+        return
+            $"ConnectionTracker(EnemyPoints={EnemyPoints}, MyPoints={MyPoints}, ConnectionPoints={ConnectionPoints}, TotalInstability={TotalInstability}) Regions=[{string.Join(",", RegionIds)}]";
     }
 }
 
@@ -374,31 +392,7 @@ public class GameArena
     }
 
 
-    public List<GameNode> MyAtRiskNodes(int riskThreshold = 0)
-    {
-        var myRegions = GetMyRegionsWherIHaveCompletedConnections();
-        var atRiskNodes = new List<GameNode>();
-
-        // select regions that have instability >=2
-        var atRiskRegions = new List<int>();
-        foreach (var regionId in myRegions)
-        {
-            var regionNodes = Nodes.Where(n => n.RegionId == regionId).ToList();
-            var instability = regionNodes.First().Instability;
-            if (instability >= riskThreshold)
-            {
-                atRiskRegions.Add(regionId);
-                atRiskNodes.AddRange(regionNodes);
-            }
-        }
-
-        // dedupe nodes
-        atRiskNodes = atRiskNodes.Distinct().ToList();
-
-        return atRiskNodes;
-    }
-
-    public List<int> GetPrioritySharedRegions(bool targetShared = false)
+    public List<int> GetPriorityRegions(bool targetShared = false)
     {
         // get all connections that have enemy nodes
         var enemyNodesPartOfActiveConnections = NodesWithActiveConnectionsByOwner(OppId);
@@ -414,6 +408,7 @@ public class GameArena
                 connectionTrackers[connection] = new ConnectionTracker();
             connectionTrackers[connection].RegionIds.Add(node.RegionId);
             connectionTrackers[connection].EnemyNodes.Add(node);
+            connectionTrackers[connection].TotalInstability = node.Instability;
         }
 
 
@@ -427,27 +422,30 @@ public class GameArena
             connectionTrackers[connection].MyNodes.Add(node);
         }
 
+        foreach (var connectionTrackersValue in connectionTrackers.Values)
+            DebugLog.DEBUG(connectionTrackersValue.ToString());
+
 
         // connections with a kill priority > 0
         var connectionsToKill = connectionTrackers.Values.ToList().Where(ct => ct.KillPriority() > 0).ToList();
 
-        var priorityRegions = new Dictionary<int, RegionScore>();
+        var connectionWithMostPoints = connectionsToKill.OrderByDescending(ct => ct.KillPriority()).FirstOrDefault();
 
-        // calculate the regions and add the scores based on the score of the connection
-        foreach (var ct in connectionsToKill)
-        foreach (var regionId in ct.RegionIds)
+        if (connectionWithMostPoints == null)
+            return new List<int>();
+
+        var connectionRegions = connectionWithMostPoints.RegionIds;
+
+        //sort regions by instability
+        var sortedRegions = connectionRegions.ToList();
+        sortedRegions.Sort((a, b) =>
         {
-            if (!priorityRegions.ContainsKey(regionId))
-                priorityRegions[regionId] = new RegionScore { RegionId = regionId, Score = 0 };
-            priorityRegions[regionId].Score += ct.ConnectionPoints;
-        }
+            var aInstability = Nodes.First(n => n.RegionId == a).Instability;
+            var bInstability = Nodes.First(n => n.RegionId == b).Instability;
+            return bInstability.CompareTo(aInstability);
+        });
 
-
-        // sort regions by score with highest first
-        var priorityRegionsList = priorityRegions.Values.ToList();
-        priorityRegionsList.Sort((a, b) => b.Score.CompareTo(a.Score));
-
-        return priorityRegionsList.Select(region => region.RegionId).ToList();
+        return sortedRegions;
     }
 
 
@@ -480,9 +478,9 @@ public class GameArena
     public List<int> GetEnemyPriorityRegionsV2()
     {
         // get all regions where the enemy has tracks
-        var regions = GetPrioritySharedRegions();
+        var regions = GetPriorityRegions();
 
-        if (regions.Count == 0) regions.AddRange(GetPrioritySharedRegions(true));
+        if (regions.Count == 0) regions.AddRange(GetPriorityRegions(true));
 
         if (regions.Count == 0) regions.AddRange(GetEnemyRegionsSortedByMostTracks());
 
@@ -495,17 +493,22 @@ public class GameArena
     {
         // get all regions where the enemy has tracks
         var regions = new HashSet<int>();
-        foreach (var node in Nodes)
-            if (node.TracksOwner == OppId)
-                regions.Add(node.RegionId);
+        foreach (var node in Nodes.Where(n => n.Instability < 4 && n.TracksOwner == OppId))
+            regions.Add(node.RegionId);
 
         // sort by the region that has the most tracks owned by the enemy
         var regionList = regions.ToList();
+
+        // sort by most tracks and highest instability
         regionList.Sort((a, b) =>
         {
             var aCount = Nodes.Count(n => n.RegionId == a && n.TracksOwner == OppId);
             var bCount = Nodes.Count(n => n.RegionId == b && n.TracksOwner == OppId);
-            return bCount.CompareTo(aCount);
+            if (bCount != aCount)
+                return bCount.CompareTo(aCount);
+            var aInstability = Nodes.First(n => n.RegionId == a).Instability;
+            var bInstability = Nodes.First(n => n.RegionId == b).Instability;
+            return bInstability.CompareTo(aInstability);
         });
 
         return regionList;
@@ -649,6 +652,8 @@ public class GameArena
                 // Use PaintCost as the movement cost
                 // Use PaintCost and Instability as the movement cost
                 var movementCost = neighbor.PaintCost;
+                // if(neighbor.TracksOwner == OppId)
+                //     movementCost += 2; // penalize enemy owned tracks
                 var tentativeGScore = gScore[currentPos] + movementCost;
                 if (!gScore.ContainsKey(neighborPos) || tentativeGScore < gScore[neighborPos])
                 {
