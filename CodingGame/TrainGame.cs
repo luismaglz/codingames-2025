@@ -92,11 +92,19 @@ using System.Diagnostics;
 
 namespace TrainGame;
 
+internal class ConnectionTracker
+{
+    public List<GameNode> EnemyNodes = new();
+
+    public List<GameNode> MyNodes = new();
+    // public List<GameNode> SharedNodes = new();
+}
+
 public static class DebugLog
 {
-    private static readonly bool InfoEnabled = true;
-    private static readonly bool DebugEnabled = true;
-    private static readonly bool CheckPointEnabled = true;
+    private static readonly bool InfoEnabled = false;
+    private static readonly bool DebugEnabled = false;
+    private static readonly bool CheckPointEnabled = false;
 
     public static void CHECKPOINT(string message)
     {
@@ -181,6 +189,8 @@ public class GameNode : Coordinate
     public int Instability { get; set; }
     public bool Inked { get; set; }
     public string PartOfActiveConnections { get; set; } = "";
+
+    public List<string> Connections => PartOfActiveConnections.Split(',').ToList();
 
     public int PaintCost
     {
@@ -328,6 +338,20 @@ public class GameArena
         return regions.ToList();
     }
 
+    public List<GameNode> NodesWithActiveConnectionsByOwner(int ownerId)
+    {
+        // get the cells that are parts of completed connections between towns
+        // get the regions of those cells
+        var nodes = new List<GameNode>();
+        foreach (var node in Nodes)
+            if (node.PartOfActiveConnections != "x" && node.TracksOwner == ownerId)
+                nodes.Add(node);
+
+
+        return nodes;
+    }
+
+
     public List<GameNode> MyAtRiskNodes(int riskThreshold = 0)
     {
         var myRegions = GetMyRegionsWherIHaveCompletedConnections();
@@ -351,6 +375,57 @@ public class GameArena
 
         return atRiskNodes;
     }
+
+    public List<int> GetPrioritySharedRegions(bool targetShared = false)
+    {
+        // get all connections that have enemy nodes
+        var enemyNodesPartOfActiveConnections = NodesWithActiveConnectionsByOwner(OppId);
+        var myNodesPartOfActiveConnections = NodesWithActiveConnectionsByOwner(MyId);
+
+        Dictionary<string, ConnectionTracker> connectionTrackers = new();
+
+        // Fill enemy nodes
+        foreach (var node in enemyNodesPartOfActiveConnections)
+        foreach (var connection in node.Connections)
+        {
+            if (!connectionTrackers.ContainsKey(connection))
+                connectionTrackers[connection] = new ConnectionTracker();
+            connectionTrackers[connection].EnemyNodes.Add(node);
+        }
+
+        // Fill my nodes
+        foreach (var node in myNodesPartOfActiveConnections)
+        foreach (var connection in node.Connections)
+        {
+            if (!connectionTrackers.ContainsKey(connection))
+                connectionTrackers[connection] = new ConnectionTracker();
+            connectionTrackers[connection].MyNodes.Add(node);
+        }
+
+        // sort connections by those that have more enemy nodes than my nodes
+        var sortedConnections = connectionTrackers.Values.Where(tracker =>
+            {
+                if (targetShared) return tracker.MyNodes.Count > 0 && tracker.EnemyNodes.Count > 0;
+
+                return tracker.MyNodes.Count == 0;
+            })
+            .Where(ct => ct.EnemyNodes.Count > 0 && ct.MyNodes.Count > 0)
+            .OrderByDescending(ct => ct.EnemyNodes.Count - ct.MyNodes.Count)
+            .ToList();
+
+        // map connections to regions
+        var priorityRegions = new List<int>();
+        foreach (var ct in sortedConnections)
+        {
+            var enemyRegionIds = ct.EnemyNodes.Select(n => n.RegionId).Distinct();
+            foreach (var regionId in enemyRegionIds)
+                if (!priorityRegions.Contains(regionId))
+                    priorityRegions.Add(regionId);
+        }
+
+        return priorityRegions;
+    }
+
 
     public List<int> GetEnemyPriorityRegions()
     {
@@ -376,6 +451,20 @@ public class GameArena
         regionList = regionList.Where(rid => !Towns.Any(t => t.Location.RegionId == rid)).ToList();
 
         return regionList;
+    }
+
+    public List<int> GetEnemyPriorityRegionsV2()
+    {
+        // get all regions where the enemy has tracks
+        var regions = GetPrioritySharedRegions();
+
+        if (regions.Count == 0) regions.AddRange(GetPrioritySharedRegions(true));
+
+        if (regions.Count == 0) regions.AddRange(GetEnemyRegionsSortedByMostTracks());
+        
+        // exclude regions that have towns
+        regions = regions.Where(rid => !Towns.Any(t => t.Location.RegionId == rid)).ToList();
+        return regions.ToList();
     }
 
     public List<int> GetEnemyRegionsSortedByMostTracks()
@@ -585,11 +674,11 @@ public class Strategy
         DebugLog.CHECKPOINT("ConnectByShortestDistance");
         DisruptIfWeCan();
 
-        if (Actions.Count == 0)
-        {
-            var atRiskNodes = _arena.MyAtRiskNodes(2);
-            ConnectByShortestDistance();
-        }
+        // if (Actions.Count == 0)
+        // {
+        //     var atRiskNodes = _arena.MyAtRiskNodes(2);
+        //     ConnectByShortestDistance();
+        // }
 
         DebugLog.CHECKPOINT("DisruptIfWeCan");
         WaitIfNoActions();
@@ -609,7 +698,7 @@ public class Strategy
     {
         var myTracks = _arena.Nodes.Where(c => c.TracksOwner == _arena.MyId).ToList();
 
-        var enemyRegions = _arena.GetEnemyPriorityRegions();
+        var enemyRegions = _arena.GetEnemyPriorityRegionsV2();
         var myRegions = myTracks.Select(t => t.RegionId).Distinct().ToList();
 
         foreach (var enemyRegion in enemyRegions) DebugLog.DEBUG($"Enemy region candidate: {enemyRegion}");
