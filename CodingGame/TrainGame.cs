@@ -226,7 +226,7 @@ public class GameArena
     private readonly GameNode[,] _grid;
     public int MyId;
     public int OppId;
-    public int turns;
+    public int SharedId = 2;
 
     public GameArena()
     {
@@ -313,6 +313,43 @@ public class GameArena
 
             return nodeList.AsReadOnly();
         }
+    }
+
+    public List<int> GetMyRegionsWherIHaveCompletedConnections(int riskThreshold = 0)
+    {
+        // get the cells that are parts of completed connections between towns
+        // get the regions of those cells
+        var regions = new HashSet<int>();
+        foreach (var node in Nodes)
+            if (node.PartOfActiveConnections != "x" && node.TracksOwner == MyId)
+                regions.Add(node.RegionId);
+
+
+        return regions.ToList();
+    }
+
+    public List<GameNode> MyAtRiskNodes(int riskThreshold = 0)
+    {
+        var myRegions = GetMyRegionsWherIHaveCompletedConnections();
+        var atRiskNodes = new List<GameNode>();
+
+        // select regions that have instability >=2
+        var atRiskRegions = new List<int>();
+        foreach (var regionId in myRegions)
+        {
+            var regionNodes = Nodes.Where(n => n.RegionId == regionId).ToList();
+            var instability = regionNodes.First().Instability;
+            if (instability >= riskThreshold)
+            {
+                atRiskRegions.Add(regionId);
+                atRiskNodes.AddRange(regionNodes);
+            }
+        }
+
+        // dedupe nodes
+        atRiskNodes = atRiskNodes.Distinct().ToList();
+
+        return atRiskNodes;
     }
 
     public List<int> GetEnemyPriorityRegions()
@@ -441,8 +478,7 @@ public class GameArena
     }
 
 
-    public List<GameNode> FindAStarPath(GameNode start, GameNode goal, bool aggressiveDisrupt,
-        List<GameNode>? nodesToExclude = null)
+    public List<GameNode> FindAStarPath(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
     {
         var openSet = new SortedSet<(int fScore, int x, int y)>();
         var cameFrom = new Dictionary<(int, int), (int, int)>();
@@ -488,16 +524,9 @@ public class GameArena
 
             foreach (var neighbor in GetNeighbors(currentNode))
             {
-                if (aggressiveDisrupt)
-                {
-                    if (neighbor.Instability == 3)
-                        continue;
-                }
-                else
-                {
-                    if (neighbor.Instability == 4)
-                        continue;
-                }
+                if (neighbor.Instability == 4)
+                    continue;
+
 
                 var neighborPos = (neighbor.X, neighbor.Y);
 
@@ -524,10 +553,10 @@ public class GameArena
         return new List<GameNode>();
     }
 
-    public int GetAStarDistance(GameNode start, GameNode goal, bool aggressiveDisrupt)
+    public int GetAStarDistance(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
     {
         // if no path found return int.MaxValue
-        var path = FindAStarPath(start, goal, aggressiveDisrupt);
+        var path = FindAStarPath(start, goal, nodesToExclude);
         return path.Count == 0 ? int.MaxValue : path.Count - 1;
     }
 }
@@ -551,14 +580,17 @@ public class Strategy
 
     public void StrategyA()
     {
-        var aggressiveDisrupt = _arena.turns > 50;
-
-        // Connect towns by shortest distance first
-        // Then disrupt enemy regions if possible
         DebugLog.CHECKPOINT("StrategyA");
         ConnectByShortestDistance();
         DebugLog.CHECKPOINT("ConnectByShortestDistance");
         DisruptIfWeCan();
+
+        if (Actions.Count == 0)
+        {
+            var atRiskNodes = _arena.MyAtRiskNodes(2);
+            ConnectByShortestDistance();
+        }
+
         DebugLog.CHECKPOINT("DisruptIfWeCan");
         WaitIfNoActions();
         DebugLog.CHECKPOINT("WaitIfNoActions");
@@ -600,7 +632,7 @@ public class Strategy
         }
     }
 
-    private void ConnectByShortestDistance(bool aggressiveDisrupt = false)
+    private void ConnectByShortestDistance(List<GameNode> nodesToExclude = null)
     {
         var currentPoints = PaintPoints;
         var towns = _arena.Towns;
@@ -613,7 +645,7 @@ public class Strategy
         {
             if (townA == townB) continue;
             if (!townA.DesiredConnections.Contains(townB.TownId)) continue;
-            var distance = _arena.GetAStarDistance(townA.Location, townB.Location, aggressiveDisrupt);
+            var distance = _arena.GetAStarDistance(townA.Location, townB.Location, nodesToExclude);
             townPairs.Add((townA.Location, townB.Location, distance));
         }
 
@@ -622,7 +654,7 @@ public class Strategy
         var sortedTownPairs = townPairs.OrderBy(tp => tp.Item3).ToList();
         foreach (var (startTown, endTown, distance) in sortedTownPairs)
         {
-            var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown, aggressiveDisrupt);
+            var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown, nodesToExclude);
 
             // place tracks as long as we have points
             foreach (var gameNode in pathBetweenTowns)
@@ -732,58 +764,18 @@ internal class Player
 {
     private static void Main(string[] args)
     {
-        // string[] inputs;
-        // var myId = int.Parse(Console.ReadLine()); // 0 or 1
-        // var width = int.Parse(Console.ReadLine()); // map size
-        // var height = int.Parse(Console.ReadLine());
-        // for (var i = 0; i < height; i++)
-        // for (var j = 0; j < width; j++)
-        // {
-        //     inputs = Console.ReadLine().Split(' ');
-        //     var regionId = int.Parse(inputs[0]);
-        //     var type = int.Parse(inputs[1]); // 0 (PLAINS), 1 (RIVER), 2 (MOUNTAIN), 3 (POI)
-        // }
-
-
-        // var townCount = int.Parse(Console.ReadLine());
-        // for (var i = 0; i < townCount; i++)
-        // {
-        //     inputs = Console.ReadLine().Split(' ');
-        //     var townId = int.Parse(inputs[0]);
-        //     var townX = int.Parse(inputs[1]);
-        //     var townY = int.Parse(inputs[2]);
-        //     var desiredConnections = inputs[3]; // comma-separated town ids e.g. 0,1,2,3
-        // }
         var arena = new GameArena();
 
         // game loop
         while (true)
         {
-            arena.turns++;
             arena.UpdateScores();
-            // for (var i = 0; i < arena.Height; i++)
-            // for (var j = 0; j < arena.Width; j++)
-            // {
-            //     inputs = Console.ReadLine().Split(' ');
-            //     var tracksOwner = int.Parse(inputs[0]);
-            //     var instability = int.Parse(inputs[1]); // region inked (destroyed) when this >= 3.
-            //     var inked = inputs[2] != "0"; // true if region is destroyed.
-            //     var
-            //         partOfActiveConnections =
-            //             inputs
-            //                 [3]; // if this cell is part of one or more railway connections, this will be town ids (separated by -) in a list separated by commas. e.g. 0-1,1-2,1-3. "x" otherwise.
-            // }
+
             arena.UpdateCellStatus();
 
-            // Write an action using Console.WriteLine()
-            // To debug: Console.Error.WriteLine("Debug messages...");
-
-
-            // AUTOPLACE x1 y1 x2 | PLACE_TRACKS x y | DISRUPT regionId | MESSAGE text
             var strategy = new Strategy(arena);
             strategy.StrategyA();
             strategy.Play();
-            // Console.WriteLine("WAIT");
         }
     }
 }
