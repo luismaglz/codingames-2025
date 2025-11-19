@@ -98,13 +98,34 @@ internal class ConnectionTracker
     public List<GameNode> EnemyNodes = new();
 
     public List<GameNode> MyNodes = new();
-    // public List<GameNode> SharedNodes = new();
+
+    public List<int> RegionIds = new();
+    public List<GameNode> SharedNodes = new();
+
+    public int EnemyPoints => EnemyNodes.Count;
+    public int MyPoints => MyNodes.Count;
+    public int ConnectionSize => EnemyNodes.Count + MyNodes.Count + SharedNodes.Count;
+
+    public int ConnectionPoints => EnemyPoints - MyPoints;
+
+    public int KillPriority()
+    {
+        if (EnemyPoints > MyPoints) return EnemyPoints - MyPoints;
+
+        return -1;
+    }
+}
+
+internal class RegionScore
+{
+    public int RegionId;
+    public int Score;
 }
 
 public static class DebugLog
 {
     private static readonly bool InfoEnabled = false;
-    private static readonly bool DebugEnabled = true;
+    private static readonly bool DebugEnabled = false;
     private static readonly bool CheckPointEnabled = false;
 
     public static void CHECKPOINT(string message)
@@ -391,8 +412,10 @@ public class GameArena
         {
             if (!connectionTrackers.ContainsKey(connection))
                 connectionTrackers[connection] = new ConnectionTracker();
+            connectionTrackers[connection].RegionIds.Add(node.RegionId);
             connectionTrackers[connection].EnemyNodes.Add(node);
         }
+
 
         // Fill my nodes
         foreach (var node in myNodesPartOfActiveConnections)
@@ -400,31 +423,31 @@ public class GameArena
         {
             if (!connectionTrackers.ContainsKey(connection))
                 connectionTrackers[connection] = new ConnectionTracker();
+            connectionTrackers[connection].RegionIds.Add(node.RegionId);
             connectionTrackers[connection].MyNodes.Add(node);
         }
 
-        // sort connections by those that have more enemy nodes than my nodes
-        var sortedConnections = connectionTrackers.Values.Where(tracker =>
-            {
-                if (targetShared) return tracker.MyNodes.Count > 0 && tracker.EnemyNodes.Count > 0;
 
-                return tracker.MyNodes.Count == 0;
-            })
-            .Where(ct => ct.EnemyNodes.Count > 0 && ct.MyNodes.Count > 0)
-            .OrderByDescending(ct => ct.EnemyNodes.Count - ct.MyNodes.Count)
-            .ToList();
+        // connections with a kill priority > 0
+        var connectionsToKill = connectionTrackers.Values.ToList().Where(ct => ct.KillPriority() > 0).ToList();
 
-        // map connections to regions
-        var priorityRegions = new List<int>();
-        foreach (var ct in sortedConnections)
+        var priorityRegions = new Dictionary<int, RegionScore>();
+
+        // calculate the regions and add the scores based on the score of the connection
+        foreach (var ct in connectionsToKill)
+        foreach (var regionId in ct.RegionIds)
         {
-            var enemyRegionIds = ct.EnemyNodes.Select(n => n.RegionId).Distinct();
-            foreach (var regionId in enemyRegionIds)
-                if (!priorityRegions.Contains(regionId))
-                    priorityRegions.Add(regionId);
+            if (!priorityRegions.ContainsKey(regionId))
+                priorityRegions[regionId] = new RegionScore { RegionId = regionId, Score = 0 };
+            priorityRegions[regionId].Score += ct.ConnectionPoints;
         }
 
-        return priorityRegions;
+
+        // sort regions by score with highest first
+        var priorityRegionsList = priorityRegions.Values.ToList();
+        priorityRegionsList.Sort((a, b) => b.Score.CompareTo(a.Score));
+
+        return priorityRegionsList.Select(region => region.RegionId).ToList();
     }
 
 
@@ -655,6 +678,17 @@ public class GameArena
         var totalCost = path.Sum(n => n.PaintCost);
         return totalCost;
     }
+
+    public int GetAStarDistanceMinusExisting(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
+    {
+        // if no path found return int.MaxValue
+        var path = FindAStarPath(start, goal, nodesToExclude).Where(n => n.TracksOwner == -1).ToList();
+
+        //count should be sum of the cost
+        if (path.Count == 0) return int.MaxValue;
+        var totalCost = path.Sum(n => n.PaintCost);
+        return totalCost;
+    }
 }
 
 #endregion
@@ -690,6 +724,13 @@ public class Strategy
         DebugLog.CHECKPOINT("DisruptIfWeCan");
         WaitIfNoActions();
         DebugLog.CHECKPOINT("WaitIfNoActions");
+    }
+
+    public void StrategyTylar()
+    {
+        ConnectByShortestDistanceV2();
+        DisruptIfWeCan();
+        WaitIfNoActions();
     }
 
     private void WaitIfNoActions()
@@ -761,9 +802,52 @@ public class Strategy
                 if (gameNode.PaintCost <= currentPoints)
                 {
                     Actions.Add(new PlaceTracks { X = gameNode.X, Y = gameNode.Y });
-                    // DebugLog.INFO($"Placed track {gameNode.X},{gameNode.Y}");
                     currentPoints -= gameNode.PaintCost;
-                    // DebugLog.INFO($"Paint cost: {gameNode.PaintCost}");
+                }
+                else
+                {
+                    // DebugLog.INFO($"Not enough paint points to place track at {gameNode.X},{gameNode.Y}");
+                    break;
+                }
+            }
+        }
+    }
+
+    private void ConnectByShortestDistanceV2(List<GameNode> nodesToExclude = null)
+    {
+        var currentPoints = PaintPoints;
+        var towns = _arena.Towns;
+
+
+        // find town pairs with shortest distance
+        var townPairs = new List<(GameNode, GameNode, int)>();
+        foreach (var townA in towns)
+        foreach (var townB in towns)
+        {
+            if (townA == townB) continue;
+            if (!townA.DesiredConnections.Contains(townB.TownId)) continue;
+            var distance = _arena.GetAStarDistanceMinusExisting(townA.Location, townB.Location, nodesToExclude);
+            DebugLog.DEBUG($"Distance: {distance} between Town {townA.TownId} and Town {townB.TownId}");
+            townPairs.Add((townA.Location, townB.Location, distance));
+        }
+
+        var townNodes = towns.Select(t => t.Location);
+
+        var sortedTownPairs = townPairs.OrderBy(tp => tp.Item3).ToList();
+        foreach (var (startTown, endTown, distance) in sortedTownPairs)
+        {
+            var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown, nodesToExclude);
+
+
+            // place tracks as long as we have points
+            foreach (var gameNode in pathBetweenTowns)
+            {
+                if (townNodes.Contains(gameNode) || gameNode.TracksOwner != -1) continue;
+
+                if (gameNode.PaintCost <= currentPoints)
+                {
+                    Actions.Add(new PlaceTracks { X = gameNode.X, Y = gameNode.Y });
+                    currentPoints -= gameNode.PaintCost;
                 }
                 else
                 {
@@ -871,7 +955,7 @@ internal class Player
             arena.UpdateCellStatus();
 
             var strategy = new Strategy(arena);
-            strategy.StrategyA();
+            strategy.StrategyTylar();
             strategy.Play();
         }
     }
