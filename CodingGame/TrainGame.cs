@@ -81,6 +81,15 @@ using System.Diagnostics;
 // At the end of every turn, each active connection will provide 1 point to each player for every track they own in the path.
 
 
+// Simarly to paint points, players can also use 1 disruption point per turn. It can be used to tamper with the map, giving you an edge over your opponent. These points aren't retained in between turns either.
+//
+//     Players may spend their disruption point each turn to increase the instability of any region by 1 .
+//
+//     Once a region's instability reaches 3 , that region is inked out, washing any placed train tracks away, and rendering any future placements on it impossible. Any active connections via this region will be severed.
+//
+//     It is not possible to disrupt a region that is already inked out.
+
+
 namespace TrainGame;
 
 public static class DebugLog
@@ -208,6 +217,8 @@ public class Town
 public class GameArena
 {
     private readonly GameNode[,] _grid;
+    public int MyId;
+    public int OppId;
 
     public GameArena()
     {
@@ -218,6 +229,12 @@ public class GameArena
         Width = width;
         Height = height;
         _grid = new GameNode[width, height];
+        myId = myId;
+        if (myId == 0)
+            OppId = 1;
+        else
+            OppId = 0;
+
 
         DebugLog.DEBUG($"Height: {height}, Width: {width}, MyID: {myId}");
 
@@ -255,11 +272,15 @@ public class GameArena
 
             DebugLog.INFO($"Town ID: {townId} at ({townX},{townY}) desires connections to: {desiredConnections}");
 
+            var desiredList = desiredConnections == "x"
+                ? new List<int>()
+                : desiredConnections.Split(',').Select(int.Parse).ToList();
+
             var town = new Town
             {
                 TownId = townId,
                 Location = GetNode(townX, townY),
-                DesiredConnections = desiredConnections.Split(',').Select(int.Parse).ToList()
+                DesiredConnections = desiredList
             };
 
             Towns = Towns.Append(town).ToList().AsReadOnly();
@@ -613,6 +634,8 @@ public class GameArena
 public class Strategy
 {
     public const int PaintPoints = 3;
+    public const int DisruptionPoints = 1;
+
     private readonly GameArena _arena;
 
     public Strategy(GameArena arena)
@@ -623,10 +646,54 @@ public class Strategy
 
     public List<IAction> Actions { get; }
 
-    public void ConnectByShortestDistance()
+    public void StrategyA()
+    {
+        // Connect towns by shortest distance first
+        // Then disrupt enemy regions if possible
+        ConnectByShortestDistance();
+        DisruptIfWeCan();
+        WaitIfNoActions();
+    }
+
+    private void WaitIfNoActions()
+    {
+        if (Actions.Count == 0)
+        {
+            Actions.Add(new WaitAction());
+            DebugLog.INFO("No actions possible, waiting.");
+        }
+    }
+
+    private void DisruptIfWeCan()
+    {
+        var enemyTracks = _arena.Nodes.Where(c => c.TracksOwner == _arena.OppId).ToList();
+        var myTracks = _arena.Nodes.Where(c => c.TracksOwner == _arena.MyId).ToList();
+
+        var enemyRegions = enemyTracks.Select(t => t.RegionId).Distinct().ToList();
+        var myRegions = myTracks.Select(t => t.RegionId).Distinct().ToList();
+
+        // find regions where enemy has tracks but we don't
+        var candidateRegions = enemyRegions.Except(myRegions).ToList();
+        foreach (var regionId in candidateRegions)
+        {
+            var regionNodes = _arena.Nodes.Where(n => n.RegionId == regionId).ToList();
+            var regionInstability = regionNodes.First().Instability;
+            var regionInked = regionNodes.First().Inked;
+
+            if (!regionInked && regionInstability <= 3)
+            {
+                Actions.Add(new DisruptRegion(regionId.ToString()));
+                DebugLog.INFO($"Disrupting region {regionId} at ({regionNodes[0].X},{regionNodes[0].Y})");
+                break; // only disrupt one region per turn
+            }
+        }
+    }
+
+    private void ConnectByShortestDistance()
     {
         var currentPoints = PaintPoints;
-        var towns = _arena.Towns.Select(town => town.Location);
+        var towns = _arena.Towns;
+
 
         // find town pairs with shortest distance
         var townPairs = new List<(GameNode, GameNode, int)>();
@@ -634,9 +701,12 @@ public class Strategy
         foreach (var townB in towns)
         {
             if (townA == townB) continue;
-            var distance = _arena.GetAStarDistance(townA, townB);
-            townPairs.Add((townA, townB, distance));
+            if (!townA.DesiredConnections.Contains(townB.TownId)) continue;
+            var distance = _arena.GetAStarDistance(townA.Location, townB.Location);
+            townPairs.Add((townA.Location, townB.Location, distance));
         }
+
+        var townNodes = towns.Select(t => t.Location);
 
         var sortedTownPairs = townPairs.OrderBy(tp => tp.Item3).ToList();
         foreach (var (startTown, endTown, distance) in sortedTownPairs)
@@ -647,7 +717,7 @@ public class Strategy
             // place tracks as long as we have points
             foreach (var gameNode in pathBetweenTowns)
             {
-                if (towns.Contains(gameNode) || gameNode.TracksOwner != -1)
+                if (townNodes.Contains(gameNode) || gameNode.TracksOwner != -1)
                 {
                     DebugLog.DEBUG($"Skipping node at {gameNode.X},{gameNode.Y}");
                     continue;
@@ -731,7 +801,48 @@ public class Strategy
 
 public interface IAction
 {
-    public void Play();
+    public string ToString();
+}
+
+public class DisruptCellAction : IAction
+{
+    public DisruptCellAction(int x, int y)
+    {
+        X = x;
+        Y = y;
+    }
+
+    public required int X { get; init; }
+    public required int Y { get; init; }
+
+
+    public override string ToString()
+    {
+        return $"DISRUPT {X} {Y}";
+    }
+}
+
+public class DisruptRegion : IAction
+{
+    private readonly string _region;
+
+    public DisruptRegion(string region)
+    {
+        _region = region;
+    }
+
+    public override string ToString()
+    {
+        return $"DISRUPT {_region}";
+    }
+}
+
+public class WaitAction : IAction
+{
+    public override string ToString()
+    {
+        return "WAIT";
+    }
 }
 
 public class PlaceTracks : IAction
@@ -739,14 +850,14 @@ public class PlaceTracks : IAction
     public required int X { get; init; }
     public required int Y { get; init; }
 
-    public void Play()
-    {
-        Console.WriteLine(ToString());
-    }
-
     public override string ToString()
     {
         return $"PLACE_TRACKS {X} {Y}";
+    }
+
+    public void Play()
+    {
+        Console.WriteLine(ToString());
     }
 }
 
@@ -807,7 +918,7 @@ internal class Player
 
             // AUTOPLACE x1 y1 x2 | PLACE_TRACKS x y | DISRUPT regionId | MESSAGE text
             var strategy = new Strategy(arena);
-            strategy.ConnectByShortestDistance();
+            strategy.StrategyA();
             strategy.Play();
             // Console.WriteLine("WAIT");
         }
