@@ -11,18 +11,6 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 
-//  	Goal
-// The first two Leagues have a special objective to achieve. The full game will play, but you can only win by completing the objective. Once you do, you can start work on your complete bot.
-// 📜 Side quest
-// A secondary alternative leaderboard is calculated for those who choose to play a little differently: can you build tracks to create paths to interesting locations instead of battling for first place?
-//
-// More details in the final league.
-//
-// 🎯 League Objective 1:
-// Connect two towns to form an active train connection to instantly win the game.
-//
-// The Boss AI will skip their turns. If you fail to form a connection within 100 turns, you will lose. Win at least 3 or more times out of 5 to progress to the next league.
-//  	Rules
 // In this game both players use paint to draw train tracks on a magic map, connecting towns on the map will bring prosterity to your own world.
 //
 // The map is represented in the game by a grid.
@@ -118,7 +106,60 @@ public static class DebugLog
     }
 }
 
-public enum RegionOwner
+public class Connection
+{
+    public List<GameNode> Nodes = new();
+
+    public bool IsActive { get; set; }
+
+    // Indicates it has highest score index of all connections between the two towns
+    public bool HasHighestScoreIndex { get; set; }
+
+    // Positive values means my advantage, negative means opponent advantage
+    public int ScoreIndex => MyScore - OppScore;
+
+
+    public int OppScore
+    {
+        get { return Nodes.Count(n => n.TracksOwner == GameArena.OppId); }
+    }
+
+    public int MyScore
+    {
+        get { return Nodes.Count(n => n.TracksOwner == GameArena.MyId); }
+    }
+
+    private Owner Owner
+    {
+        get
+        {
+            var owners = Nodes.Select(n => n.TracksOwner).Distinct().ToList();
+            var hasMe = owners.Contains(GameArena.MyId);
+            var hasOpp = owners.Contains(GameArena.OppId);
+
+            if (hasMe && hasOpp)
+                return Owner.Shared;
+            if (hasMe)
+                return Owner.Me;
+            if (hasOpp)
+                return Owner.Opponent;
+            return Owner.None;
+        }
+    }
+
+    private List<Region> Regions
+    {
+        get
+        {
+            return Nodes.Select(n => n.RegionId)
+                .Distinct()
+                .Select(id => GameArena.Regions[id])
+                .ToList();
+        }
+    }
+}
+
+public enum Owner
 {
     None = -1,
     Me = 0,
@@ -151,10 +192,10 @@ public class Region
         }
     }
 
-    public RegionOwner RegionOwner { get; private set; } = RegionOwner.None;
+    public Owner Owner { get; private set; } = Owner.None;
 
 
-    public int GetRegionScore(Region region, int instabilityWeight = 3, int cellCountWeight = 1)
+    public int GetRegionScore(Region region, int instabilityWeight = 1, int cellCountWeight = 1)
     {
         return instabilityWeight * region.Instability + cellCountWeight * region.Cells.Count;
     }
@@ -170,19 +211,19 @@ public class Region
         var hasOpp = owners.Contains(GameArena.OppId);
 
         if (hasMe && hasOpp)
-            RegionOwner = RegionOwner.Shared;
+            Owner = Owner.Shared;
         else if (hasMe)
-            RegionOwner = RegionOwner.Me;
+            Owner = Owner.Me;
         else if (hasOpp)
-            RegionOwner = RegionOwner.Opponent;
+            Owner = Owner.Opponent;
         else
-            RegionOwner = RegionOwner.None;
+            Owner = Owner.None;
     }
 
     public override string ToString()
     {
         return
-            $"Region[Id={RegionId}, Instability={Instability}, Inked={Inked}, CellCount={Cells.Count}] Owner={RegionOwner}";
+            $"Region[Id={RegionId}, Instability={Instability}, Inked={Inked}, CellCount={Cells.Count}] Owner={Owner}";
     }
 }
 
@@ -227,12 +268,6 @@ internal class ConnectionTracker
     }
 }
 
-internal class RegionScore
-{
-    public int RegionId;
-    public int Score;
-}
-
 public class Coordinate
 {
     public required int X { get; init; }
@@ -243,40 +278,6 @@ public class Coordinate
     public override string ToString()
     {
         return $"({X},{Y})";
-    }
-
-    // Returns N E W S based on the direction from this to the target coordinate
-    public string GetDirectionTo(Coordinate target)
-    {
-        if (target.X > X) return "E";
-        if (target.X < X) return "W";
-        if (target.Y > Y) return "S";
-        if (target.Y < Y) return "N";
-
-        DebugLog.INFO(
-            $"ERROR: GetDirectionTo called with same coordinates : this=({X},{Y}) target=({target.X},{target.Y})");
-        throw new ArgumentOutOfRangeException();
-        return "X"; // same position
-    }
-
-
-    // Get coordinate in direction
-    public Coordinate GetCoordinateInDirection(string direction)
-    {
-        switch (direction)
-        {
-            case "N":
-                return new Coordinate { X = X, Y = Y - 1 };
-            case "E":
-                return new Coordinate { X = X + 1, Y = Y };
-            case "S":
-                return new Coordinate { X = X, Y = Y + 1 };
-            case "W":
-                return new Coordinate { X = X - 1, Y = Y };
-            default:
-                DebugLog.INFO("ERROR: GetCoordinateInDirection called with invalid direction: " + direction);
-                throw new ArgumentOutOfRangeException();
-        }
     }
 }
 
@@ -344,8 +345,13 @@ public class GameArena
     public static int MyId;
     public static int OppId;
     public static int SharedId = 2;
+    public static Dictionary<int, Region> Regions = new();
+
     private readonly GameNode[,] _grid;
-    public Dictionary<int, Region> Regions = new();
+
+    public Dictionary<string, List<Connection>> Connections = new();
+
+    public Dictionary<string, List<GameNode>> PathCache = new();
 
     public GameArena()
     {
@@ -413,8 +419,6 @@ public class GameArena
 
     public ReadOnlyCollection<Town> Towns { get; internal set; } = new([]);
 
-    public int myId { get; internal set; }
-
     public int myScore { get; internal set; }
     public int foeScore { get; internal set; }
 
@@ -432,6 +436,13 @@ public class GameArena
 
             return nodeList.AsReadOnly();
         }
+    }
+
+    public void ResetOnEveryRound()
+    {
+        Regions = new Dictionary<int, Region>();
+        PathCache = new Dictionary<string, List<GameNode>>();
+        Connections = new Dictionary<string, List<Connection>>();
     }
 
     public List<GameNode> NodesWithActiveConnectionsByOwner(int ownerId)
@@ -515,9 +526,6 @@ public class GameArena
 
     public void UpdateCellStatus()
     {
-        // Reset Regions dictionary
-        Regions = new Dictionary<int, Region>();
-
         string[] inputs;
         for (var y = 0; y < Height; y++)
         for (var x = 0; x < Width; x++)
@@ -547,6 +555,63 @@ public class GameArena
         {
             var node = town.Location;
             Regions[node.RegionId].ContainsTown = true;
+        }
+    }
+
+    public void FillConnections()
+    {
+        // Fill connections between towns including both active and inactive connections
+        Connections = new Dictionary<string, List<Connection>>();
+
+        foreach (var town in Towns)
+        foreach (var targetId in town.DesiredConnections)
+        {
+            var targetTown = Towns.FirstOrDefault(t => t.TownId == targetId);
+            if (targetTown == null) continue;
+
+            var allPaths = FindAllExistingConnections(town.Location, targetTown.Location);
+
+            var key = $"{town.TownId}-{targetId}";
+            Connections[key] = allPaths.Select(path => new Connection
+            {
+                Nodes = path,
+                IsActive = false
+            }).ToList();
+        }
+
+        // for each town pair conection find the shortest and mark it active
+        // If there are multiple shortest paths, the chosen path will always prioritize the direction in this order when moving from the requesting town to the desired connected town:
+        //
+        // NORTH
+        // EAST
+        // SOUTH
+        // WEST
+        foreach (var key in Connections.Keys)
+        {
+            var connectionList = Connections[key];
+            if (connectionList.Count == 0) continue;
+            var shortestLength = connectionList.Min(c => c.Nodes.Count);
+            var shortestConnections = connectionList.Where(c => c.Nodes.Count == shortestLength).ToList();
+            // prioritize by direction
+            var prioritizedConnection = shortestConnections.OrderBy(c =>
+            {
+                var start = c.Nodes.First();
+                var end = c.Nodes.Last();
+                var dx = end.X - start.X;
+                var dy = end.Y - start.Y;
+                if (dy < 0) return 0; // NORTH
+                if (dx > 0) return 1; // EAST
+                if (dy > 0) return 2; // SOUTH
+                return 3; // WEST
+            }).First();
+            prioritizedConnection.IsActive = true;
+
+
+            // Set HasHighestScoreIndex for connection with highest score index
+            var maxScoreIndex = connectionList.Max(c => c.ScoreIndex);
+            foreach (var connection in connectionList)
+                if (connection.ScoreIndex == maxScoreIndex)
+                    connection.HasHighestScoreIndex = true;
         }
     }
 
@@ -585,9 +650,19 @@ public class GameArena
         return Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y);
     }
 
+    public string CreatePathCacheKey(GameNode start, GameNode goal, List<GameNode>? nodesToExclude)
+    {
+        var excludePart = nodesToExclude != null
+            ? string.Join(";", nodesToExclude.Select(n => $"{n.X},{n.Y}"))
+            : "none";
+        return $"{start.X},{start.Y}->{goal.X},{goal.Y}|exclude:{excludePart}";
+    }
 
     public List<GameNode> FindAStarPath(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
     {
+        var cacheKey = CreatePathCacheKey(start, goal, nodesToExclude);
+        if (PathCache.ContainsKey(cacheKey)) return PathCache[cacheKey];
+
         var openSet = new SortedSet<(int fScore, int x, int y)>();
         var cameFrom = new Dictionary<(int, int), (int, int)>();
         var gScore = new Dictionary<(int, int), int>();
@@ -624,6 +699,7 @@ public class GameArena
 
                 path.Add(start);
                 path.Reverse();
+                PathCache[cacheKey] = path;
                 return path;
             }
 
@@ -661,7 +737,39 @@ public class GameArena
             }
         }
 
+        PathCache[cacheKey] = new List<GameNode>();
         return new List<GameNode>();
+    }
+
+    // DFS to find all existing connections using only tracks/towns
+    private List<List<GameNode>> FindAllExistingConnections(GameNode start, GameNode goal)
+    {
+        var results = new List<List<GameNode>>();
+        var stack = new Stack<(GameNode node, List<GameNode> path)>();
+        var townLocations = Towns.Select(t => t.Location).ToHashSet();
+
+        stack.Push((start, new List<GameNode> { start }));
+
+        while (stack.Count > 0)
+        {
+            var (current, path) = stack.Pop();
+
+            if (current.X == goal.X && current.Y == goal.Y)
+            {
+                results.Add(new List<GameNode>(path));
+                continue;
+            }
+
+            foreach (var neighbor in GetNeighbors(current))
+            {
+                if (path.Contains(neighbor)) continue;
+                // Skip empty nodes (no track and not a town)
+                if (neighbor.TracksOwner == -1 && !townLocations.Contains(neighbor)) continue;
+                stack.Push((neighbor, new List<GameNode>(path) { neighbor }));
+            }
+        }
+
+        return results;
     }
 
     public int GetAStarCost_old(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
@@ -752,6 +860,22 @@ public class Strategy
         WaitIfNoActions();
     }
 
+    
+    public void BuildBackBetterV2()
+    {
+        DebugLog.CHECKPOINT("BuildBackBetter");
+
+        ConnectByShortestDistance(useExistingInDistanceCalc: true, scramblePath: true);
+        DebugLog.CHECKPOINT("ConnectByShortestDistance");
+
+        DisruptIfWeCan();
+        DebugLog.CHECKPOINT("DisruptIfWeCan");
+
+        PlaceTrackInRandomEmptySquare();
+        DebugLog.CHECKPOINT("PlaceRandomSquare");
+
+        WaitIfNoActions();
+    }
 
     private void PlaceTrackInRandomEmptySquare()
     {
@@ -787,8 +911,8 @@ public class Strategy
     {
         DebugLog.DEBUG("DisruptIfWeCan");
 
-        var enemyRegions = _arena.Regions.Values
-            .Where(r => r.RegionOwner == RegionOwner.Opponent && !r.ContainsTown)
+        var enemyRegions = GameArena.Regions.Values
+            .Where(r => r.Owner == Owner.Opponent && !r.ContainsTown)
             .OrderByDescending(r => r.GetRegionScore(r))
             .ToList();
 
@@ -812,7 +936,7 @@ public class Strategy
 
         // Sort disputed regions by score, highest first
         var sortedDisputed = regions
-            .Select(id => _arena.Regions[id])
+            .Select(id => GameArena.Regions[id])
             .OrderByDescending(r => r.GetRegionScore(r))
             .ToList();
 
@@ -823,6 +947,24 @@ public class Strategy
                 DebugLog.INFO($"2 Disrupting disputed region {region.RegionId}");
                 return;
             }
+    }
+
+    private void DisruptSmartly()
+    {
+        // var mostDisadvantageousConnection = null;
+        
+        foreach (var keyValuePair in _arena.Connections)
+        {
+            var key = keyValuePair.Key;
+            var connections = keyValuePair.Value;
+            
+            // Check if there is an active connection
+            var activeConnection = connections.FirstOrDefault(c => c.IsActive);
+            if (activeConnection == null) continue;
+        }
+        
+        DebugLog.CHECKPOINT("DisruptSmartly");
+        DisruptIfWeCan();
     }
 
     private void ConnectByShortestDistance(List<GameNode> nodesToExclude = null, bool scramblePath = false,
@@ -974,9 +1116,10 @@ internal class Player
         // game loop
         while (true)
         {
+            arena.ResetOnEveryRound();
             arena.UpdateScores();
-
             arena.UpdateCellStatus();
+            arena.FillConnections();
 
             var strategy = new Strategy(arena);
             strategy.BuildBackBetter();
