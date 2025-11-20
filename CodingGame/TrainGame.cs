@@ -570,6 +570,11 @@ public class GameArena
         }
     }
 
+    public string CreateConnectionKey(int townId, int targetId)
+    {
+        return $"{townId}-{targetId}";
+    }
+
     public void FillConnections()
     {
         // Fill connections between towns including both active and inactive connections
@@ -583,7 +588,7 @@ public class GameArena
 
             var allPaths = FindAllExistingAlternativeConnections(town.Location, targetTown.Location);
 
-            var key = $"{town.TownId}-{targetId}";
+            var key = CreateConnectionKey(town.TownId, targetId);
             Connections[key] = allPaths.Select(path => new Connection
             {
                 Nodes = path,
@@ -926,18 +931,70 @@ public class Strategy
 
     public void BuildBackBetterV2()
     {
-        DebugLog.CHECKPOINT("BuildBackBetter");
+        DebugLog.CHECKPOINT("BuildBackBetterV2");
 
+        DebugLog.CHECKPOINT("ConnectByShortestDistance Start");
         ConnectByShortestDistance(useExistingInDistanceCalc: true, scramblePath: true);
-        DebugLog.CHECKPOINT("ConnectByShortestDistance");
+        DebugLog.CHECKPOINT("ConnectByShortestDistance End");
 
+        DebugLog.CHECKPOINT("DisruptIfWeCan Start");
         DisruptSmartly();
-        DebugLog.CHECKPOINT("DisruptIfWeCan");
+        DebugLog.CHECKPOINT("DisruptIfWeCan End");
 
+        DebugLog.CHECKPOINT("ConnectAlternativeRoutes Start");
+        ConnectAlternativeRoutes();
+        DebugLog.CHECKPOINT("ConnectAlternativeRoutes End");
+
+        DebugLog.CHECKPOINT("PlaceRandomSquare Start");
         PlaceTrackInRandomEmptySquare();
-        DebugLog.CHECKPOINT("PlaceRandomSquare");
+        DebugLog.CHECKPOINT("PlaceRandomSquare End");
 
         WaitIfNoActions();
+    }
+
+    private void ConnectAlternativeRoutes()
+    {
+        DebugLog.CHECKPOINT("ConnectAlternativeRoutes");
+        var townPairs = new List<(GameNode, GameNode, int)>();
+
+        foreach (var town in _arena.Towns)
+        foreach (var targetId in town.DesiredConnections)
+        {
+            var targetTown = _arena.Towns.FirstOrDefault(t => t.TownId == targetId);
+            if (targetTown == null) continue;
+
+            // check for existing active connection
+            var key = _arena.CreateConnectionKey(town.TownId, targetId);
+            if (_arena.Connections.ContainsKey(key))
+            {
+                var activeConnection = _arena.Connections[key]
+                    .FirstOrDefault(c => c.IsActive);
+                if (activeConnection != null)
+                {
+                    var cost = _arena.GetAStarCost(town.Location, targetTown.Location, activeConnection.Nodes);
+                    townPairs.Add((town.Location, targetTown.Location, cost));
+                }
+            }
+        }
+
+        var sortedTownPairs = _arena.SortTownPairs(townPairs);
+
+        foreach (var (start, end, cost) in sortedTownPairs)
+        {
+            if (PaintPoints <= 0) break;
+
+            var path = _arena.FindAStarPath(start, end);
+            foreach (var node in path)
+            {
+                if (node.TracksOwner == -1 && PaintPoints >= node.PaintCost)
+                {
+                    Actions.Add(new PlaceTracks { X = node.X, Y = node.Y });
+                    PaintPoints -= node.PaintCost;
+                }
+
+                if (PaintPoints <= 0) break;
+            }
+        }
     }
 
     private void PlaceTrackInRandomEmptySquare()
