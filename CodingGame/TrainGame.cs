@@ -1059,7 +1059,7 @@ public class Strategy
         foreach (var enemyRegion in enemyRegions) DebugLog.DEBUG($"Enemy region candidate: {enemyRegion}");
 
         foreach (var region in enemyRegions)
-            if (!region.Inked && region.Instability <= 3)
+            if (!region.Inked)
             {
                 Actions.Add(new DisruptRegion(region.RegionId.ToString()));
                 DisruptionPointAvailable = false;
