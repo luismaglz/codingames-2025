@@ -208,7 +208,7 @@ public class Region
     public Owner Owner { get; private set; } = Owner.None;
 
 
-    public int GetRegionScore(Region region, int instabilityWeight = 2, int cellCountWeight = 1)
+    public int GetRegionScore(Region region, int instabilityWeight = 1, int cellCountWeight = 1)
     {
         return instabilityWeight * region.Instability + cellCountWeight * region.Cells.Count;
     }
@@ -729,8 +729,10 @@ public class GameArena
         {
             var pointsLeft = MaxPaintPoints;
             var tracks = 0;
-            foreach (var node in path)
-                if (node.TracksOwner == -1 && pointsLeft >= node.PaintCost)
+            // Filter out nodes with existing tracks
+            var layablePath = path.Where(n => n.TracksOwner == -1).ToList();
+            foreach (var node in layablePath)
+                if (pointsLeft >= node.PaintCost)
                 {
                     pointsLeft -= node.PaintCost;
                     tracks++;
@@ -741,7 +743,7 @@ public class GameArena
 
         var nodeUsage = new Dictionary<GameNode, int>();
         foreach (var (_, _, _, path) in townPairs)
-        foreach (var node in path)
+        foreach (var node in path.Where(n => n.TracksOwner == -1))
         {
             if (!nodeUsage.ContainsKey(node))
                 nodeUsage[node] = 0;
@@ -751,11 +753,11 @@ public class GameArena
         var pairSharedCount = new Dictionary<(GameNode, GameNode), int>();
         foreach (var (start, end, _, path) in townPairs)
         {
-            var shared = path.Sum(n => nodeUsage[n]) - path.Count;
+            var layablePath = path.Where(n => n.TracksOwner == -1).ToList();
+            var shared = layablePath.Sum(n => nodeUsage[n]) - layablePath.Count;
             pairSharedCount[(start, end)] = shared;
         }
 
-        // Identify "super special" and "special" paths
         var superSpecialPairs = new HashSet<(GameNode, GameNode)>();
         var specialPairs = new HashSet<(GameNode, GameNode)>();
         foreach (var (start, end, _, path) in townPairs)
@@ -771,12 +773,25 @@ public class GameArena
                     specialPairs.Add((start, end));
             }
         }
+        
+        // Identify "immediate" pairs: all unclaimed cells, total cost <= 3
+        var immediatePairs = new HashSet<(GameNode, GameNode)>();
+        foreach (var (start, end, _, path) in townPairs)
+        {
+            var layablePath = path.Where(n => n.TracksOwner == -1).ToList();
+            var totalCost = layablePath.Sum(n => n.PaintCost);
+            if (layablePath.Count == path.Count && totalCost <= MaxPaintPoints)
+                immediatePairs.Add((start, end));
+        }
+
 
         var sorted = townPairs
-            .OrderByDescending(tp => superSpecialPairs.Contains((tp.Item1, tp.Item2))) // highest priority
-            .ThenByDescending(tp => specialPairs.Contains((tp.Item1, tp.Item2))) // next priority
+            .OrderByDescending(tp => immediatePairs.Contains((tp.Item1, tp.Item2)))
+            .ThenByDescending(tp => superSpecialPairs.Contains((tp.Item1, tp.Item2)))
+            .ThenByDescending(tp => specialPairs.Contains((tp.Item1, tp.Item2)))
             .ThenByDescending(tp => layableTracks[(tp.Item1, tp.Item2)])
-            .ThenBy(tp => tp.Item3)
+            .ThenByDescending(tp => pairSharedCount[(tp.Item1, tp.Item2)])
+            .ThenByDescending(tp => tp.Item3)
             .ToList();
 
         return sorted;
