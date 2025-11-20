@@ -353,6 +353,8 @@ public class GameArena
 
     public Dictionary<string, List<GameNode>> PathCache = new();
 
+    public List<int> RegionsCannotDisrupt = new();
+
     public GameArena()
     {
         string[] inputs;
@@ -443,6 +445,7 @@ public class GameArena
         Regions = new Dictionary<int, Region>();
         PathCache = new Dictionary<string, List<GameNode>>();
         Connections = new Dictionary<string, List<Connection>>();
+        RegionsCannotDisrupt = new List<int>();
     }
 
     public Region? FindBestRegionToDisrupt(List<GameNode> nodes)
@@ -456,6 +459,20 @@ public class GameArena
             .OrderByDescending(r => r.GetRegionScore(r))
             .FirstOrDefault();
         return regionToDisrupt;
+    }
+
+    public List<Region> GetPathRegions(List<GameNode> nodes, GameNode start, GameNode goal)
+    {
+        var startRegion = Regions[start.RegionId];
+        var goalRegion = Regions[goal.RegionId];
+
+        var regions = nodes
+            .Select(n => n.RegionId)
+            .Distinct()
+            .Where(id => Regions.ContainsKey(id) && id != startRegion.RegionId && id != goalRegion.RegionId)
+            .Select(id => Regions[id])
+            .ToList();
+        return regions;
     }
 
     public List<GameNode> GetRegionAdjacentNodes(List<GameNode> nodes, GameNode start, GameNode goal)
@@ -581,6 +598,7 @@ public class GameArena
         {
             var node = town.Location;
             Regions[node.RegionId].ContainsTown = true;
+            RegionsCannotDisrupt.Add(node.RegionId);
         }
     }
 
@@ -689,7 +707,7 @@ public class GameArena
         var pathDict = new Dictionary<(GameNode, GameNode), List<GameNode>>();
         foreach (var (start, end, _) in townPairs)
         {
-            var path = FindAStarPath(start, end); // assumes this method is available in context
+            var path = FindAStarPath(start, end, new List<Region>()); // assumes this method is available in context
             pathDict[(start, end)] = path;
         }
 
@@ -732,7 +750,29 @@ public class GameArena
         return $"{start.X},{start.Y}->{goal.X},{goal.Y}|exclude:{excludePart}";
     }
 
-    public List<GameNode> FindAStarPath(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
+    public string CreatePathCacheKey(GameNode start, GameNode goal, List<Region>? regionsToExclude)
+    {
+        var excludePart = regionsToExclude != null
+            ? string.Join(";", regionsToExclude.Select(n => $"{n.RegionId}"))
+            : "none";
+        return $"{start.X},{start.Y}->{goal.X},{goal.Y}|exclude:{excludePart}";
+    }
+
+    public List<GameNode> FindAStarPath(GameNode start, GameNode goal, List<Region>? regionsToAvoid = null)
+    {
+        var cacheKey = CreatePathCacheKey(start, goal, regionsToAvoid);
+        if (PathCache.ContainsKey(cacheKey)) return PathCache[cacheKey];
+
+        var nodesToExclude = regionsToAvoid != null
+            ? Nodes.Where(n => regionsToAvoid.Select(r => r.RegionId).Contains(n.RegionId)).Distinct().ToList()
+            : null;
+
+        var path = FindAStarPath(start, goal, nodesToExclude);
+        PathCache[cacheKey] = path;
+        return path;
+    }
+
+    private List<GameNode> FindAStarPath(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
     {
         var cacheKey = CreatePathCacheKey(start, goal, nodesToExclude);
         if (PathCache.ContainsKey(cacheKey)) return PathCache[cacheKey];
@@ -853,18 +893,7 @@ public class GameArena
         return results;
     }
 
-    public int GetAStarCost_old(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
-    {
-        // if no path found return int.MaxValue
-        var path = FindAStarPath(start, goal, nodesToExclude);
-
-        //count should be sum of the cost
-        if (path.Count == 0) return int.MaxValue;
-        var totalCost = path.Sum(n => n.PaintCost);
-        return totalCost;
-    }
-
-    public int GetAStarCost(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
+    private int GetAStarCost(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
     {
         var path = FindAStarPath(start, goal, nodesToExclude);
         if (path.Count == 0) return int.MaxValue;
@@ -885,10 +914,31 @@ public class GameArena
         return Math.Max(1, totalCost - regionBonus);
     }
 
-    public int GetAStarDistanceMinusExisting(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
+    public int GetAStarCost(GameNode start, GameNode goal, List<Region>? regionsToAvoid = null)
+    {
+        var path = FindAStarPath(start, goal, regionsToAvoid);
+        if (path.Count == 0) return int.MaxValue;
+
+        var totalCost = path.Sum(n => n.PaintCost);
+
+        // Favor fewer regions and regions with towns
+        var regionIds = path.Select(n => n.RegionId).Distinct();
+        var regionBonus = 0;
+        foreach (var regionId in regionIds)
+            // Subtract 2 for each region, subtract 3 if region has a town
+            if (Regions[regionId].ContainsTown)
+                regionBonus += 2;
+            else
+                regionBonus += 1;
+
+        // Ensure cost doesn't go below 1
+        return Math.Max(1, totalCost - regionBonus);
+    }
+
+    public int GetAStarDistanceMinusExisting(GameNode start, GameNode goal)
     {
         // if no path found return int.MaxValue
-        var path = FindAStarPath(start, goal, nodesToExclude).Where(n => n.TracksOwner == -1).ToList();
+        var path = FindAStarPath(start, goal, new List<Region>()).Where(n => n.TracksOwner == -1).ToList();
 
         //count should be sum of the cost
         if (path.Count == 0) return int.MaxValue;
@@ -980,13 +1030,12 @@ public class Strategy
             var key = _arena.CreateConnectionKey(town.TownId, targetId);
             if (_arena.Connections.ContainsKey(key))
             {
-                var activeConnection = _arena.Connections[key]
-                    .FirstOrDefault(c => c.IsActive);
+                var activeConnection = _arena.Connections[key].FirstOrDefault(c => c.IsActive);
                 if (activeConnection != null)
                 {
-                    var nodesToExclude =
-                        _arena.GetRegionAdjacentNodes(activeConnection.Nodes, town.Location, targetTown.Location);
-                    var cost = _arena.GetAStarCost(town.Location, targetTown.Location, nodesToExclude);
+                    var regionsToExclude =
+                        _arena.GetPathRegions(activeConnection.Nodes, town.Location, targetTown.Location);
+                    var cost = _arena.GetAStarCost(town.Location, targetTown.Location, regionsToExclude);
                     townPairs.Add((town.Location, targetTown.Location, cost));
                 }
             }
@@ -1007,9 +1056,9 @@ public class Strategy
 
                 if (activeConnection != null)
                 {
-                    var nodesToExclude =
-                        _arena.GetRegionAdjacentNodes(activeConnection.Nodes, startTown.Location, targetTown.Location);
-                    var path = _arena.FindAStarPath(start, end, nodesToExclude);
+                    var regionsToExclude =
+                        _arena.GetPathRegions(activeConnection.Nodes, startTown.Location, targetTown.Location);
+                    var path = _arena.FindAStarPath(start, end, regionsToExclude);
                     foreach (var node in path)
                     {
                         if (node.TracksOwner == -1 && PaintPoints >= node.PaintCost)
@@ -1194,17 +1243,22 @@ public class Strategy
         // if we have regions to disrupt from the analysis, pick the best one
         if (regionDisruptionDelta.Count > 0)
         {
-            var bestRegion = regionDisruptionDelta.OrderByDescending(kv => kv.Value).First();
-            Actions.Add(new DisruptRegion(bestRegion.Key.ToString()));
-            DebugLog.INFO($"Disrupting best analyzed region {bestRegion.Key} with delta {bestRegion.Value}");
-            DisruptionPointAvailable = false;
-            return;
+            var descendingRegions = regionDisruptionDelta.OrderByDescending(kv => kv.Value);
+            foreach (var keyValuePair in descendingRegions)
+            {
+                if (_arena.RegionsCannotDisrupt.Contains(keyValuePair.Key)) continue;
+                Actions.Add(new DisruptRegion(keyValuePair.Key.ToString()));
+                DebugLog.INFO(
+                    $"Disrupting best analyzed region {keyValuePair.Key} with delta {keyValuePair.Value}");
+                DisruptionPointAvailable = false;
+                return;
+            }
         }
 
         DisruptIfWeCan();
     }
 
-    private void ConnectByShortestDistance(List<GameNode> nodesToExclude = null, bool scramblePath = false,
+    private void ConnectByShortestDistance(bool scramblePath = false,
         bool useExistingInDistanceCalc = false)
     {
         var towns = _arena.Towns;
@@ -1218,9 +1272,9 @@ public class Strategy
             if (!townA.DesiredConnections.Contains(townB.TownId)) continue;
             var distance = 0;
             if (useExistingInDistanceCalc)
-                distance = _arena.GetAStarDistanceMinusExisting(townA.Location, townB.Location, nodesToExclude);
+                distance = _arena.GetAStarDistanceMinusExisting(townA.Location, townB.Location);
             else
-                distance = _arena.GetAStarCost(townA.Location, townB.Location, nodesToExclude);
+                distance = _arena.GetAStarCost(townA.Location, townB.Location, new List<Region>());
 
             townPairs.Add((townA.Location, townB.Location, distance));
         }
@@ -1234,7 +1288,7 @@ public class Strategy
 
         foreach (var (startTown, endTown, distance) in sortedTownPairs)
         {
-            var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown, nodesToExclude);
+            var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown, new List<Region>());
 
             if (scramblePath)
                 // scramble the path 
