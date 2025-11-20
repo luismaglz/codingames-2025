@@ -758,7 +758,7 @@ public class GameArena
 
         stack.Push((start, new List<GameNode> { start }));
 
-        while (stack.Count > 0)
+        while (stack.Count > 0 && results.Count < 10)
         {
             var (current, path) = stack.Pop();
 
