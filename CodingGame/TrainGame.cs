@@ -147,7 +147,20 @@ public class Connection
         }
     }
 
-    private List<Region> Regions
+    public List<Region> DisruptableRegions
+    {
+        get
+        {
+            return Nodes.Select(n => n.RegionId)
+                .Distinct()
+                .Where(id => GameArena.Regions.ContainsKey(id))
+                .Select(id => GameArena.Regions[id])
+                .Where(r => !r.ContainsTown && !r.Inked)
+                .ToList();
+        }
+    }
+
+    public List<Region> Regions
     {
         get
         {
@@ -701,15 +714,12 @@ public class GameArena
         return neighbors;
     }
 
-    public List<(GameNode, GameNode, int)> SortTownPairs(List<(GameNode, GameNode, int)> townPairs)
+    public List<(GameNode, GameNode, int, List<GameNode>)> SortTownPairs(
+        List<(GameNode, GameNode, int, List<GameNode>)> townPairs)
     {
         // Step 1: Find shortest paths for each pair
         var pathDict = new Dictionary<(GameNode, GameNode), List<GameNode>>();
-        foreach (var (start, end, _) in townPairs)
-        {
-            var path = FindAStarPath(start, end, new List<Region>()); // assumes this method is available in context
-            pathDict[(start, end)] = path;
-        }
+        foreach (var (start, end, _, path) in townPairs) pathDict[(start, end)] = path;
 
         // Step 2: Count shared nodes for each path
         var nodeUsage = new Dictionary<GameNode, int>();
@@ -854,6 +864,13 @@ public class GameArena
         return new List<GameNode>();
     }
 
+    public List<GameNode> FindAStarPathMinusExisting(GameNode start, GameNode goal)
+    {
+        // if no path found return int.MaxValue
+        var path = FindAStarPath(start, goal, new List<Region>()).Where(n => n.TracksOwner == -1).ToList();
+        return path;
+    }
+
     // DFS to find all existing connections using only tracks/towns
     private List<List<GameNode>> FindAllExistingAlternativeConnections(GameNode start, GameNode goal)
     {
@@ -893,9 +910,9 @@ public class GameArena
         return results;
     }
 
-    private int GetAStarCost(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
+
+    public int GetPathCost(List<GameNode> path)
     {
-        var path = FindAStarPath(start, goal, nodesToExclude);
         if (path.Count == 0) return int.MaxValue;
 
         var totalCost = path.Sum(n => n.PaintCost);
@@ -917,33 +934,7 @@ public class GameArena
     public int GetAStarCost(GameNode start, GameNode goal, List<Region>? regionsToAvoid = null)
     {
         var path = FindAStarPath(start, goal, regionsToAvoid);
-        if (path.Count == 0) return int.MaxValue;
-
-        var totalCost = path.Sum(n => n.PaintCost);
-
-        // Favor fewer regions and regions with towns
-        var regionIds = path.Select(n => n.RegionId).Distinct();
-        var regionBonus = 0;
-        foreach (var regionId in regionIds)
-            // Subtract 2 for each region, subtract 3 if region has a town
-            if (Regions[regionId].ContainsTown)
-                regionBonus += 2;
-            else
-                regionBonus += 1;
-
-        // Ensure cost doesn't go below 1
-        return Math.Max(1, totalCost - regionBonus);
-    }
-
-    public int GetAStarDistanceMinusExisting(GameNode start, GameNode goal)
-    {
-        // if no path found return int.MaxValue
-        var path = FindAStarPath(start, goal, new List<Region>()).Where(n => n.TracksOwner == -1).ToList();
-
-        //count should be sum of the cost
-        if (path.Count == 0) return int.MaxValue;
-        var totalCost = path.Sum(n => n.PaintCost);
-        return totalCost;
+        return GetPathCost(path);
     }
 }
 
@@ -1006,7 +997,7 @@ public class Strategy
         DebugLog.CHECKPOINT("DisruptIfWeCan End");
 
         DebugLog.CHECKPOINT("ConnectAlternativeRoutes Start");
-        ConnectAlternativeRoutes();
+        ConnectAlternativeRoutesV2();
         DebugLog.CHECKPOINT("ConnectAlternativeRoutes End");
 
         DebugLog.CHECKPOINT("PlaceRandomSquare Start");
@@ -1019,7 +1010,7 @@ public class Strategy
     private void ConnectAlternativeRoutes()
     {
         DebugLog.CHECKPOINT("ConnectAlternativeRoutes");
-        var townPairs = new List<(GameNode, GameNode, int)>();
+        var townPairs = new List<(GameNode, GameNode, int, List<GameNode>)>();
 
         foreach (var town in _arena.Towns)
         foreach (var targetId in town.DesiredConnections)
@@ -1035,15 +1026,17 @@ public class Strategy
                 {
                     var regionsToExclude =
                         _arena.GetPathRegions(activeConnection.Nodes, town.Location, targetTown.Location);
-                    var cost = _arena.GetAStarCost(town.Location, targetTown.Location, regionsToExclude);
-                    townPairs.Add((town.Location, targetTown.Location, cost));
+                    var path = _arena.FindAStarPath(town.Location, targetTown.Location, regionsToExclude);
+                    if (path.Count == 0) continue;
+                    var cost = _arena.GetPathCost(path);
+                    townPairs.Add((town.Location, targetTown.Location, cost, path));
                 }
             }
         }
 
         var sortedTownPairs = _arena.SortTownPairs(townPairs);
 
-        foreach (var (start, end, cost) in sortedTownPairs)
+        foreach (var (start, end, cost, path) in sortedTownPairs)
         {
             if (PaintPoints <= 0) break;
             var startTown = _arena.Towns.First(t => t.Location == start);
@@ -1055,10 +1048,6 @@ public class Strategy
                 var activeConnection = _arena.Connections[key].FirstOrDefault(c => c.IsActive);
 
                 if (activeConnection != null)
-                {
-                    var regionsToExclude =
-                        _arena.GetPathRegions(activeConnection.Nodes, startTown.Location, targetTown.Location);
-                    var path = _arena.FindAStarPath(start, end, regionsToExclude);
                     foreach (var node in path)
                     {
                         if (node.TracksOwner == -1 && PaintPoints >= node.PaintCost)
@@ -1069,7 +1058,80 @@ public class Strategy
 
                         if (PaintPoints <= 0) break;
                     }
-                }
+            }
+        }
+    }
+
+    private void ConnectAlternativeRoutesV2()
+    {
+        Dictionary<string, Connection> activeConnections = new();
+
+        // Filled active dictionary
+        foreach (var cell in _arena.Nodes)
+            if (cell.PartOfActiveConnections != "x")
+            {
+                var connections = cell.PartOfActiveConnections.Split(',');
+                foreach (var conn in connections)
+                    if (!activeConnections.ContainsKey(conn))
+                    {
+                        var connection = new Connection();
+                        connection.Nodes = new List<GameNode>();
+                        connection.IsActive = true;
+                        connection.Nodes.Add(cell);
+                        activeConnections[conn] = connection;
+                    }
+                    else
+                    {
+                        activeConnections[conn].Nodes.Add(cell);
+                    }
+            }
+
+        var townPairs = new List<(GameNode, GameNode, int, List<GameNode>)>();
+
+        foreach (var town in _arena.Towns)
+        foreach (var targetId in town.DesiredConnections)
+        {
+            var targetTown = _arena.Towns.FirstOrDefault(t => t.TownId == targetId);
+            if (targetTown == null) continue;
+
+            var key = _arena.CreateConnectionKey(town.TownId, targetId);
+            if (activeConnections.ContainsKey(key))
+            {
+                var activeConnection = activeConnections[key];
+                var regionsToExclude = activeConnection.DisruptableRegions;
+                if (regionsToExclude.Count == 0)
+                    continue;
+                var path = _arena.FindAStarPath(town.Location, targetTown.Location, [regionsToExclude.First()]);
+                var cost = _arena.GetPathCost(path);
+                townPairs.Add((town.Location, targetTown.Location, cost, path));
+            }
+        }
+
+        var sortedTownPairs = _arena.SortTownPairs(townPairs);
+
+
+        foreach (var (start, end, cost, path) in sortedTownPairs)
+        {
+            if (PaintPoints <= 0) break;
+            var startTown = _arena.Towns.First(t => t.Location == start);
+            var targetTown = _arena.Towns.First(t => t.Location == end);
+            var key = _arena.CreateConnectionKey(startTown.TownId, targetTown.TownId);
+
+            if (_arena.Connections.ContainsKey(key))
+            {
+                var activeConnection = _arena.Connections[key].FirstOrDefault(c => c.IsActive);
+
+                if (activeConnection != null)
+                    foreach (var node in path)
+                    {
+                        if (node.TracksOwner == -1 && PaintPoints >= node.PaintCost)
+                        {
+                            Actions.Add(new PlaceTracks { X = node.X, Y = node.Y });
+                            PaintPoints -= node.PaintCost;
+                        }
+
+                        if (PaintPoints <= 0) break;
+                    }
             }
         }
     }
@@ -1264,19 +1326,25 @@ public class Strategy
         var towns = _arena.Towns;
 
         // find town pairs with shortest distance
-        var townPairs = new List<(GameNode, GameNode, int)>();
+        var townPairs = new List<(GameNode, GameNode, int, List<GameNode>)>();
         foreach (var townA in towns)
         foreach (var townB in towns)
         {
             if (townA == townB) continue;
             if (!townA.DesiredConnections.Contains(townB.TownId)) continue;
-            var distance = 0;
-            if (useExistingInDistanceCalc)
-                distance = _arena.GetAStarDistanceMinusExisting(townA.Location, townB.Location);
-            else
-                distance = _arena.GetAStarCost(townA.Location, townB.Location, new List<Region>());
+            var path = new List<GameNode>();
 
-            townPairs.Add((townA.Location, townB.Location, distance));
+            if (useExistingInDistanceCalc)
+                path = _arena.FindAStarPathMinusExisting(townA.Location, townB.Location);
+            else
+                path = _arena.FindAStarPath(townA.Location, townB.Location, new List<Region>());
+
+            if (path.Count == 0)
+                continue;
+
+            var distance = _arena.GetPathCost(path);
+
+            townPairs.Add((townA.Location, townB.Location, distance, path));
         }
 
         var townNodes = towns.Select(t => t.Location);
@@ -1286,10 +1354,9 @@ public class Strategy
 
         var sortedTownPairs = _arena.SortTownPairs(townPairs);
 
-        foreach (var (startTown, endTown, distance) in sortedTownPairs)
+        foreach (var (startTown, endTown, distance, path) in sortedTownPairs)
         {
-            var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown, new List<Region>());
-
+            var pathBetweenTowns = path;
             if (scramblePath)
                 // scramble the path 
                 pathBetweenTowns = pathBetweenTowns.OrderBy(n => Guid.NewGuid()).ToList();
