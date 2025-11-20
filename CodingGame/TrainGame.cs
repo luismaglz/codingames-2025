@@ -114,6 +114,7 @@ public class Connection
 
     // Indicates it has highest score index of all connections between the two towns
     public bool HasHighestScoreIndex { get; set; }
+    public bool HasHighestDisadvantageIndex { get; set; }
 
     // Positive values means my advantage, negative means opponent advantage
     public int ScoreIndex => MyScore - OppScore;
@@ -609,9 +610,16 @@ public class GameArena
 
             // Set HasHighestScoreIndex for connection with highest score index
             var maxScoreIndex = connectionList.Max(c => c.ScoreIndex);
+
+            // Set HasHighestDisadvantageIndex for connection with highest negative score index
+            var maxDisadvantageIndex = connectionList.Min(c => c.ScoreIndex);
+
             foreach (var connection in connectionList)
-                if (connection.ScoreIndex == maxScoreIndex)
-                    connection.HasHighestScoreIndex = true;
+            {
+                if (connection.ScoreIndex == maxScoreIndex) connection.HasHighestScoreIndex = true;
+
+                if (connection.ScoreIndex == maxDisadvantageIndex) connection.HasHighestDisadvantageIndex = true;
+            }
         }
     }
 
@@ -821,6 +829,7 @@ public class GameArena
 public class Strategy
 {
     private readonly GameArena _arena;
+    private bool DisruptionPointAvailable = true;
     private int PaintPoints = 3;
 
     public Strategy(GameArena arena)
@@ -860,7 +869,7 @@ public class Strategy
         WaitIfNoActions();
     }
 
-    
+
     public void BuildBackBetterV2()
     {
         DebugLog.CHECKPOINT("BuildBackBetter");
@@ -868,7 +877,7 @@ public class Strategy
         ConnectByShortestDistance(useExistingInDistanceCalc: true, scramblePath: true);
         DebugLog.CHECKPOINT("ConnectByShortestDistance");
 
-        DisruptIfWeCan();
+        DisruptSmartly();
         DebugLog.CHECKPOINT("DisruptIfWeCan");
 
         PlaceTrackInRandomEmptySquare();
@@ -910,6 +919,11 @@ public class Strategy
     private void DisruptIfWeCan()
     {
         DebugLog.DEBUG("DisruptIfWeCan");
+        if (!DisruptionPointAvailable)
+        {
+            DebugLog.DEBUG("Disruption point not available.");
+            return;
+        }
 
         var enemyRegions = GameArena.Regions.Values
             .Where(r => r.Owner == Owner.Opponent && !r.ContainsTown)
@@ -922,6 +936,7 @@ public class Strategy
             if (!region.Inked && region.Instability <= 3)
             {
                 Actions.Add(new DisruptRegion(region.RegionId.ToString()));
+                DisruptionPointAvailable = false;
                 DebugLog.INFO($"1 Disrupting region {region.RegionId}");
                 return;
             }
@@ -934,6 +949,13 @@ public class Strategy
             return;
         }
 
+        if (!DisruptionPointAvailable)
+        {
+            DebugLog.DEBUG("Disruption point not available.");
+            return;
+        }
+
+
         // Sort disputed regions by score, highest first
         var sortedDisputed = regions
             .Select(id => GameArena.Regions[id])
@@ -944,6 +966,7 @@ public class Strategy
             if (!region.Inked && region.Instability <= 3 && !region.ContainsTown)
             {
                 Actions.Add(new DisruptRegion(region.RegionId.ToString()));
+                DisruptionPointAvailable = false;
                 DebugLog.INFO($"2 Disrupting disputed region {region.RegionId}");
                 return;
             }
@@ -951,19 +974,52 @@ public class Strategy
 
     private void DisruptSmartly()
     {
-        // var mostDisadvantageousConnection = null;
-        
+        DebugLog.CHECKPOINT("DisruptSmartly");
+
+
         foreach (var keyValuePair in _arena.Connections)
         {
             var key = keyValuePair.Key;
             var connections = keyValuePair.Value;
-            
+
             // Check if there is an active connection
             var activeConnection = connections.FirstOrDefault(c => c.IsActive);
-            if (activeConnection == null) continue;
+            if (activeConnection == null)
+            {
+                DebugLog.DEBUG($"No active connection for {key}");
+                continue;
+            }
+
+            // If the active connection is already in our favor, skip
+            if (activeConnection.ScoreIndex >= 0)
+            {
+                DebugLog.DEBUG($"Active connection for {key} is already in our favor.");
+                continue;
+            }
+
+            // Check if its worth disrupting
+            if (activeConnection.HasHighestDisadvantageIndex)
+            {
+                DebugLog.DEBUG($"Disrupting connection for {key} with disadvantage {activeConnection.ScoreIndex}");
+                // Disrupt a region in this connection
+                var regionToDisrupt = activeConnection.Nodes
+                    .Select(n => n.RegionId)
+                    .Distinct()
+                    .Select(id => GameArena.Regions[id])
+                    .Where(r => !r.ContainsTown && !r.Inked)
+                    .OrderByDescending(r => r.GetRegionScore(r))
+                    .ToList().First();
+
+                if (regionToDisrupt != null)
+                {
+                    Actions.Add(new DisruptRegion(regionToDisrupt.RegionId.ToString()));
+                    DebugLog.INFO($"3 Disrupting region {regionToDisrupt.RegionId} in connection {key}");
+                    DisruptionPointAvailable = false;
+                    return;
+                }
+            }
         }
-        
-        DebugLog.CHECKPOINT("DisruptSmartly");
+
         DisruptIfWeCan();
     }
 
@@ -1122,7 +1178,7 @@ internal class Player
             arena.FillConnections();
 
             var strategy = new Strategy(arena);
-            strategy.BuildBackBetter();
+            strategy.BuildBackBetterV2();
             strategy.Play();
         }
     }
