@@ -450,10 +450,11 @@ public class GameArena
         var regionToDisrupt = nodes
             .Select(n => n.RegionId)
             .Distinct()
+            .Where(id => Regions.ContainsKey(id))
             .Select(id => Regions[id])
             .Where(r => !r.ContainsTown && !r.Inked)
             .OrderByDescending(r => r.GetRegionScore(r))
-            .ToList().FirstOrDefault();
+            .FirstOrDefault();
         return regionToDisrupt;
     }
 
@@ -791,7 +792,7 @@ public class GameArena
 
                 // Favor nodes in regions with towns
                 var movementCost = neighbor.PaintCost;
-                if (Regions[neighbor.RegionId].ContainsTown)
+                if (Regions.ContainsKey(neighbor.RegionId) && Regions[neighbor.RegionId].ContainsTown)
                     movementCost = Math.Max(1, movementCost - 1);
                 var tentativeGScore = gScore[currentPos] + movementCost;
                 if (!gScore.ContainsKey(neighborPos) || tentativeGScore < gScore[neighborPos])
@@ -976,7 +977,6 @@ public class Strategy
             var targetTown = _arena.Towns.FirstOrDefault(t => t.TownId == targetId);
             if (targetTown == null) continue;
 
-            // check for existing active connection
             var key = _arena.CreateConnectionKey(town.TownId, targetId);
             if (_arena.Connections.ContainsKey(key))
             {
@@ -997,17 +997,30 @@ public class Strategy
         foreach (var (start, end, cost) in sortedTownPairs)
         {
             if (PaintPoints <= 0) break;
+            var startTown = _arena.Towns.First(t => t.Location == start);
+            var targetTown = _arena.Towns.First(t => t.Location == end);
+            var key = _arena.CreateConnectionKey(startTown.TownId, targetTown.TownId);
 
-            var path = _arena.FindAStarPath(start, end);
-            foreach (var node in path)
+            if (_arena.Connections.ContainsKey(key))
             {
-                if (node.TracksOwner == -1 && PaintPoints >= node.PaintCost)
-                {
-                    Actions.Add(new PlaceTracks { X = node.X, Y = node.Y });
-                    PaintPoints -= node.PaintCost;
-                }
+                var activeConnection = _arena.Connections[key].FirstOrDefault(c => c.IsActive);
 
-                if (PaintPoints <= 0) break;
+                if (activeConnection != null)
+                {
+                    var nodesToExclude =
+                        _arena.GetRegionAdjacentNodes(activeConnection.Nodes, startTown.Location, targetTown.Location);
+                    var path = _arena.FindAStarPath(start, end, nodesToExclude);
+                    foreach (var node in path)
+                    {
+                        if (node.TracksOwner == -1 && PaintPoints >= node.PaintCost)
+                        {
+                            Actions.Add(new PlaceTracks { X = node.X, Y = node.Y });
+                            PaintPoints -= node.PaintCost;
+                        }
+
+                        if (PaintPoints <= 0) break;
+                    }
+                }
             }
         }
     }
