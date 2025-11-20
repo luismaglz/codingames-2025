@@ -581,7 +581,7 @@ public class GameArena
             var targetTown = Towns.FirstOrDefault(t => t.TownId == targetId);
             if (targetTown == null) continue;
 
-            var allPaths = FindAllExistingConnections(town.Location, targetTown.Location);
+            var allPaths = FindAllExistingAlternativeConnections(town.Location, targetTown.Location);
 
             var key = $"{town.TownId}-{targetId}";
             Connections[key] = allPaths.Select(path => new Connection
@@ -766,7 +766,6 @@ public class GameArena
                 if (neighbor.Inked) // Skip inked nodes
                     continue;
 
-
                 var neighborPos = (neighbor.X, neighbor.Y);
 
                 if (excludeSet.Contains(neighborPos))
@@ -797,9 +796,10 @@ public class GameArena
     }
 
     // DFS to find all existing connections using only tracks/towns
-    private List<List<GameNode>> FindAllExistingConnections(GameNode start, GameNode goal)
+    private List<List<GameNode>> FindAllExistingAlternativeConnections(GameNode start, GameNode goal)
     {
         var results = new List<List<GameNode>>();
+        var regionSets = new HashSet<string>();
         var stack = new Stack<(GameNode node, List<GameNode> path)>();
         var townLocations = Towns.Select(t => t.Location).ToHashSet();
 
@@ -811,14 +811,21 @@ public class GameArena
 
             if (current.X == goal.X && current.Y == goal.Y)
             {
-                results.Add(new List<GameNode>(path));
+                var regionIds = path.Select(n => n.RegionId).Distinct().OrderBy(id => id);
+                var regionKey = string.Join(",", regionIds);
+
+                if (!regionSets.Contains(regionKey))
+                {
+                    results.Add(new List<GameNode>(path));
+                    regionSets.Add(regionKey);
+                }
+
                 continue;
             }
 
             foreach (var neighbor in GetNeighbors(current))
             {
                 if (path.Contains(neighbor)) continue;
-                // Skip empty nodes (no track and not a town)
                 if (neighbor.TracksOwner == -1 && !townLocations.Contains(neighbor)) continue;
                 stack.Push((neighbor, new List<GameNode>(path) { neighbor }));
             }
@@ -1143,7 +1150,7 @@ public class Strategy
         foreach (var (startTown, endTown, distance) in sortedTownPairs)
         {
             var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown, nodesToExclude);
-            
+
             if (scramblePath)
                 // scramble the path 
                 pathBetweenTowns = pathBetweenTowns.OrderBy(n => Guid.NewGuid()).ToList();
