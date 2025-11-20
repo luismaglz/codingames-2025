@@ -664,6 +664,42 @@ public class GameArena
         return neighbors;
     }
 
+    public List<(GameNode, GameNode, int)> SortTownPairs(List<(GameNode, GameNode, int)> townPairs)
+    {
+        // Step 1: Find shortest paths for each pair
+        var pathDict = new Dictionary<(GameNode, GameNode), List<GameNode>>();
+        foreach (var (start, end, _) in townPairs)
+        {
+            var path = FindAStarPath(start, end); // assumes this method is available in context
+            pathDict[(start, end)] = path;
+        }
+
+        // Step 2: Count shared nodes for each path
+        var nodeUsage = new Dictionary<GameNode, int>();
+        foreach (var path in pathDict.Values)
+        foreach (var node in path)
+        {
+            if (!nodeUsage.ContainsKey(node))
+                nodeUsage[node] = 0;
+            nodeUsage[node]++;
+        }
+
+        var pairSharedCount = new Dictionary<(GameNode, GameNode), int>();
+        foreach (var kvp in pathDict)
+        {
+            var shared = kvp.Value.Sum(n => nodeUsage[n]) - kvp.Value.Count; // exclude self-count
+            pairSharedCount[kvp.Key] = shared;
+        }
+
+        // Step 3: Sort by cost, then by shared node count (descending)
+        var sorted = townPairs
+            .OrderBy(tp => tp.Item3)
+            .ThenByDescending(tp => pairSharedCount[(tp.Item1, tp.Item2)])
+            .ToList();
+
+        return sorted;
+    }
+
     public int CalculateManhattanDistance(Coordinate a, Coordinate b)
     {
         return Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y);
@@ -1099,12 +1135,15 @@ public class Strategy
 
         var townNodes = towns.Select(t => t.Location);
 
-        var sortedTownPairs = townPairs.OrderBy(tp => tp.Item3).ToList();
+        // TODO : CHECK IF THIS BETTER
+        // var sortedTownPairs = townPairs.OrderBy(tp => tp.Item3).ToList();
+
+        var sortedTownPairs = _arena.SortTownPairs(townPairs);
+
         foreach (var (startTown, endTown, distance) in sortedTownPairs)
         {
             var pathBetweenTowns = _arena.FindAStarPath(startTown, endTown, nodesToExclude);
-
-
+            
             if (scramblePath)
                 // scramble the path 
                 pathBetweenTowns = pathBetweenTowns.OrderBy(n => Guid.NewGuid()).ToList();
@@ -1152,24 +1191,6 @@ public class Strategy
 public interface IAction
 {
     public string ToString();
-}
-
-public class DisruptCellAction : IAction
-{
-    public DisruptCellAction(int x, int y)
-    {
-        X = x;
-        Y = y;
-    }
-
-    public required int X { get; init; }
-    public required int Y { get; init; }
-
-
-    public override string ToString()
-    {
-        return $"DISRUPT {X} {Y}";
-    }
 }
 
 public class DisruptRegion : IAction
