@@ -95,7 +95,7 @@ namespace TrainGame;
 
 public static class DebugLog
 {
-    private static readonly bool InfoEnabled = false;
+    private static readonly bool InfoEnabled = true;
     private static readonly bool DebugEnabled = true;
     private static readonly bool CheckPointEnabled = false;
 
@@ -682,7 +682,7 @@ public class GameArena
         return new List<GameNode>();
     }
 
-    public int GetAStarDistance(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
+    public int GetAStarCost_old(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
     {
         // if no path found return int.MaxValue
         var path = FindAStarPath(start, goal, nodesToExclude);
@@ -691,6 +691,27 @@ public class GameArena
         if (path.Count == 0) return int.MaxValue;
         var totalCost = path.Sum(n => n.PaintCost);
         return totalCost;
+    }
+
+    public int GetAStarCost(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
+    {
+        var path = FindAStarPath(start, goal, nodesToExclude);
+        if (path.Count == 0) return int.MaxValue;
+
+        var totalCost = path.Sum(n => n.PaintCost);
+
+        // Favor fewer regions and regions with towns
+        var regionIds = path.Select(n => n.RegionId).Distinct();
+        var regionBonus = 0;
+        foreach (var regionId in regionIds)
+            // Subtract 2 for each region, subtract 3 if region has a town
+            if (Regions[regionId].ContainsTown)
+                regionBonus += 2;
+            else
+                regionBonus += 1;
+
+        // Ensure cost doesn't go below 1
+        return Math.Max(1, totalCost - regionBonus);
     }
 
     public int GetAStarDistanceMinusExisting(GameNode start, GameNode goal, List<GameNode>? nodesToExclude = null)
@@ -784,7 +805,6 @@ public class Strategy
     {
         DebugLog.DEBUG("DisruptIfWeCan");
 
-        DebugLog.DEBUG(_arena.Regions[9].ToString());
         var enemyRegions = _arena.Regions.Values.Where(r => r.RegionOwner == RegionOwner.Opponent && !r.ContainsTown)
             .ToList();
 
@@ -794,8 +814,8 @@ public class Strategy
             if (!region.Inked && region.Instability <= 3)
             {
                 Actions.Add(new DisruptRegion(region.RegionId.ToString()));
-                DebugLog.INFO($"Disrupting region {region.RegionId}");
-                break; // only disrupt one region per turn
+                DebugLog.INFO($"1 Disrupting region {region.RegionId}");
+                return;
             }
 
         var regions = _arena.GetRegionsOfDisputedConnections();
@@ -809,11 +829,11 @@ public class Strategy
         foreach (var regionId in regions)
         {
             var region = _arena.Regions[regionId];
-            if (!region.Inked && region.Instability <= 3)
+            if (!region.Inked && region.Instability <= 3 && region.ContainsTown == false)
             {
                 Actions.Add(new DisruptRegion(region.RegionId.ToString()));
-                DebugLog.INFO($"Disrupting disputed region {region.RegionId}");
-                break; // only disrupt one region per turn
+                DebugLog.INFO($"2 Disrupting disputed region {region.RegionId}");
+                return; // only disrupt one region per turn
             }
         }
     }
@@ -822,7 +842,6 @@ public class Strategy
         bool useExistingInDistanceCalc = false)
     {
         var towns = _arena.Towns;
-
 
         // find town pairs with shortest distance
         var townPairs = new List<(GameNode, GameNode, int)>();
@@ -835,7 +854,7 @@ public class Strategy
             if (useExistingInDistanceCalc)
                 distance = _arena.GetAStarDistanceMinusExisting(townA.Location, townB.Location, nodesToExclude);
             else
-                distance = _arena.GetAStarDistance(townA.Location, townB.Location, nodesToExclude);
+                distance = _arena.GetAStarCost(townA.Location, townB.Location, nodesToExclude);
 
             townPairs.Add((townA.Location, townB.Location, distance));
         }
