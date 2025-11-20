@@ -112,13 +112,12 @@ public class Connection
 
     public bool IsActive { get; set; }
 
-    // Indicates it has highest score index of all connections between the two towns
+    // Indicates it has the highest score index of all connections between the two towns
     public bool HasHighestScoreIndex { get; set; }
     public bool HasHighestDisadvantageIndex { get; set; }
 
     // Positive values means my advantage, negative means opponent advantage
     public int ScoreIndex => MyScore - OppScore;
-
 
     public int OppScore
     {
@@ -444,6 +443,18 @@ public class GameArena
         Regions = new Dictionary<int, Region>();
         PathCache = new Dictionary<string, List<GameNode>>();
         Connections = new Dictionary<string, List<Connection>>();
+    }
+
+    public Region? FindBestRegionToDisrupt(List<GameNode> nodes)
+    {
+        var regionToDisrupt = nodes
+            .Select(n => n.RegionId)
+            .Distinct()
+            .Select(id => Regions[id])
+            .Where(r => !r.ContainsTown && !r.Inked)
+            .OrderByDescending(r => r.GetRegionScore(r))
+            .ToList().FirstOrDefault();
+        return regionToDisrupt;
     }
 
     public List<GameNode> NodesWithActiveConnectionsByOwner(int ownerId)
@@ -890,7 +901,7 @@ public class Strategy
     {
         // while we have points, place track on random empty square
         var rand = new Random();
-        var emptySquares = _arena.Nodes.Where(n => n.TracksOwner == -1 && n.Instability < 4).ToList();
+        var emptySquares = _arena.Nodes.Where(n => n.TracksOwner == -1 && !n.Inked).ToList();
         var towns = _arena.Towns.Select(t => t.Location).ToList();
         emptySquares = emptySquares.Where(s => !towns.Contains(s)).ToList();
         while (PaintPoints > 0 && emptySquares.Count > 0)
@@ -972,10 +983,12 @@ public class Strategy
             }
     }
 
+
     private void DisruptSmartly()
     {
         DebugLog.CHECKPOINT("DisruptSmartly");
 
+        Dictionary<int, int> regionDisruptionDelta = new();
 
         foreach (var keyValuePair in _arena.Connections)
         {
@@ -990,34 +1003,74 @@ public class Strategy
                 continue;
             }
 
-            // If the active connection is already in our favor, skip
-            if (activeConnection.ScoreIndex >= 0)
-            {
-                DebugLog.DEBUG($"Active connection for {key} is already in our favor.");
-                continue;
-            }
+            // First we minimize disadvantage connections
 
             // Check if its worth disrupting
             if (activeConnection.HasHighestDisadvantageIndex)
             {
-                DebugLog.DEBUG($"Disrupting connection for {key} with disadvantage {activeConnection.ScoreIndex}");
-                // Disrupt a region in this connection
-                var regionToDisrupt = activeConnection.Nodes
-                    .Select(n => n.RegionId)
-                    .Distinct()
-                    .Select(id => GameArena.Regions[id])
-                    .Where(r => !r.ContainsTown && !r.Inked)
-                    .OrderByDescending(r => r.GetRegionScore(r))
-                    .ToList().First();
+                // get next smallest disadvantage connection
+                var nextActiveCandidate = connections.Where(c => c != activeConnection)
+                    .OrderBy(c => c.Nodes.Count())
+                    .FirstOrDefault();
 
-                if (regionToDisrupt != null)
+                // only disrupt if next active candidate has a better score index
+                if (nextActiveCandidate != null && nextActiveCandidate.ScoreIndex > activeConnection.ScoreIndex)
                 {
-                    Actions.Add(new DisruptRegion(regionToDisrupt.RegionId.ToString()));
-                    DebugLog.INFO($"3 Disrupting region {regionToDisrupt.RegionId} in connection {key}");
-                    DisruptionPointAvailable = false;
-                    return;
+                    DebugLog.DEBUG($"Disrupting connection for {key} with disadvantage {activeConnection.ScoreIndex}");
+                    // Disrupt a region in this connection
+                    var regionToDisrupt = _arena.FindBestRegionToDisrupt(activeConnection.Nodes);
+
+                    if (regionToDisrupt is not null)
+                    {
+                        if (regionDisruptionDelta.ContainsKey(regionToDisrupt.RegionId))
+                            regionDisruptionDelta[regionToDisrupt.RegionId] +=
+                                nextActiveCandidate.ScoreIndex - activeConnection.ScoreIndex;
+                        else
+                            regionDisruptionDelta[regionToDisrupt.RegionId] =
+                                nextActiveCandidate.ScoreIndex - activeConnection.ScoreIndex;
+                    }
                 }
             }
+
+            // Try to maximize advantage connections
+            if (activeConnection.ScoreIndex >= 0)
+            {
+                DebugLog.DEBUG($"Active connection for {key} neutral checking if we can gain an advantage.");
+
+                // get shortest non-active connection
+                var nextActiveCandidate = connections.Where(c => c != activeConnection)
+                    .OrderBy(c => c.Nodes.Count())
+                    .FirstOrDefault();
+
+                // only disrupt if next active candidates score is positive
+                if (nextActiveCandidate != null && nextActiveCandidate.ScoreIndex > 0)
+                {
+                    DebugLog.DEBUG(
+                        $"Disrupting connection for {key} to gain advantage {nextActiveCandidate.ScoreIndex}");
+                    // Disrupt a region in this connection
+                    var regionToDisrupt = _arena.FindBestRegionToDisrupt(activeConnection.Nodes);
+
+                    if (regionToDisrupt is not null)
+                    {
+                        if (regionDisruptionDelta.ContainsKey(regionToDisrupt.RegionId))
+                            regionDisruptionDelta[regionToDisrupt.RegionId] +=
+                                nextActiveCandidate.ScoreIndex - activeConnection.ScoreIndex;
+                        else
+                            regionDisruptionDelta[regionToDisrupt.RegionId] =
+                                nextActiveCandidate.ScoreIndex - activeConnection.ScoreIndex;
+                    }
+                }
+            }
+        }
+
+        // if we have regions to disrupt from the analysis, pick the best one
+        if (regionDisruptionDelta.Count > 0)
+        {
+            var bestRegion = regionDisruptionDelta.OrderByDescending(kv => kv.Value).First();
+            Actions.Add(new DisruptRegion(bestRegion.Key.ToString()));
+            DebugLog.INFO($"Disrupting best analyzed region {bestRegion.Key} with delta {bestRegion.Value}");
+            DisruptionPointAvailable = false;
+            return;
         }
 
         DisruptIfWeCan();
