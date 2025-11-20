@@ -930,12 +930,6 @@ public class GameArena
         // Ensure cost doesn't go below 1
         return Math.Max(1, totalCost - regionBonus);
     }
-
-    public int GetAStarCost(GameNode start, GameNode goal, List<Region>? regionsToAvoid = null)
-    {
-        var path = FindAStarPath(start, goal, regionsToAvoid);
-        return GetPathCost(path);
-    }
 }
 
 #endregion
@@ -1064,7 +1058,9 @@ public class Strategy
 
     private void ConnectAlternativeRoutesV2()
     {
-        Dictionary<string, Connection> activeConnections = new();
+        // Trying to find alternative routes prioritizing connections with highest negative score index
+
+        Dictionary<string, Connection> activeConnectionDictionary = new();
 
         // Filled active dictionary
         foreach (var cell in _arena.Nodes)
@@ -1072,66 +1068,68 @@ public class Strategy
             {
                 var connections = cell.PartOfActiveConnections.Split(',');
                 foreach (var conn in connections)
-                    if (!activeConnections.ContainsKey(conn))
+                    if (!activeConnectionDictionary.ContainsKey(conn))
                     {
                         var connection = new Connection();
                         connection.Nodes = new List<GameNode>();
                         connection.IsActive = true;
                         connection.Nodes.Add(cell);
-                        activeConnections[conn] = connection;
+                        activeConnectionDictionary[conn] = connection;
                     }
                     else
                     {
-                        activeConnections[conn].Nodes.Add(cell);
+                        activeConnectionDictionary[conn].Nodes.Add(cell);
                     }
             }
 
         var townPairs = new List<(GameNode, GameNode, int, List<GameNode>)>();
 
-        foreach (var town in _arena.Towns)
-        foreach (var targetId in town.DesiredConnections)
-        {
-            var targetTown = _arena.Towns.FirstOrDefault(t => t.TownId == targetId);
-            if (targetTown == null) continue;
+        var activeConnections = activeConnectionDictionary.Values.OrderBy(ac => ac.ScoreIndex).ToList();
 
-            var key = _arena.CreateConnectionKey(town.TownId, targetId);
-            if (activeConnections.ContainsKey(key))
+        foreach (var activeConnection in activeConnections)
+        {
+            var townNode = activeConnection.Nodes[0];
+            var town = _arena.Towns.FirstOrDefault(t => t.Location.X == townNode.X && t.Location.Y == townNode.Y);
+            if (town == null) continue;
+            foreach (var targetId in town.DesiredConnections)
             {
-                var activeConnection = activeConnections[key];
-                var regionsToExclude = activeConnection.DisruptableRegions;
-                if (regionsToExclude.Count == 0)
-                    continue;
-                var path = _arena.FindAStarPath(town.Location, targetTown.Location, [regionsToExclude.First()]);
-                var cost = _arena.GetPathCost(path);
-                townPairs.Add((town.Location, targetTown.Location, cost, path));
+                var targetTown = _arena.Towns.FirstOrDefault(t => t.TownId == targetId);
+                if (targetTown == null) continue;
+
+                var key = _arena.CreateConnectionKey(town.TownId, targetId);
+                if (activeConnectionDictionary.ContainsKey(key))
+                {
+                    var regionsToExclude = activeConnection.DisruptableRegions;
+                    if (regionsToExclude.Count == 0)
+                        continue;
+                    var path = _arena.FindAStarPath(town.Location, targetTown.Location, [regionsToExclude.First()]);
+                    var cost = _arena.GetPathCost(path);
+                    townPairs.Add((town.Location, targetTown.Location, cost, path));
+                }
             }
-        }
 
-        var sortedTownPairs = _arena.SortTownPairs(townPairs);
+            var sortedTownPairs = _arena.SortTownPairs(townPairs);
 
 
-        foreach (var (start, end, cost, path) in sortedTownPairs)
-        {
-            if (PaintPoints <= 0) break;
-            var startTown = _arena.Towns.First(t => t.Location == start);
-            var targetTown = _arena.Towns.First(t => t.Location == end);
-            var key = _arena.CreateConnectionKey(startTown.TownId, targetTown.TownId);
-
-            if (_arena.Connections.ContainsKey(key))
+            foreach (var (start, end, cost, path) in sortedTownPairs)
             {
-                var activeConnection = _arena.Connections[key].FirstOrDefault(c => c.IsActive);
+                if (PaintPoints <= 0) break;
+                var startTown = _arena.Towns.First(t => t.Location == start);
+                var targetTown = _arena.Towns.First(t => t.Location == end);
+                var key = _arena.CreateConnectionKey(startTown.TownId, targetTown.TownId);
 
-                if (activeConnection != null)
-                    foreach (var node in path)
-                    {
-                        if (node.TracksOwner == -1 && PaintPoints >= node.PaintCost)
+                if (_arena.Connections.ContainsKey(key))
+                    if (activeConnection != null)
+                        foreach (var node in path)
                         {
-                            Actions.Add(new PlaceTracks { X = node.X, Y = node.Y });
-                            PaintPoints -= node.PaintCost;
-                        }
+                            if (node.TracksOwner == -1 && PaintPoints >= node.PaintCost)
+                            {
+                                Actions.Add(new PlaceTracks { X = node.X, Y = node.Y });
+                                PaintPoints -= node.PaintCost;
+                            }
 
-                        if (PaintPoints <= 0) break;
-                    }
+                            if (PaintPoints <= 0) break;
+                        }
             }
         }
     }
