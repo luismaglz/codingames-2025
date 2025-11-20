@@ -457,6 +457,19 @@ public class GameArena
         return regionToDisrupt;
     }
 
+    public List<GameNode> GetRegionAdjacentNodes(List<GameNode> nodes, GameNode start, GameNode goal)
+    {
+        var regions = nodes.Select(n => n.RegionId);
+
+        // exclude the region of start and goal
+        regions = regions.Where(rid => rid != start.RegionId && rid != goal.RegionId);
+
+        // return all nodes in those regions
+        var adjacentNodes = Nodes.Where(n => regions.Contains(n.RegionId)).ToList();
+        return adjacentNodes;
+    }
+
+
     public List<GameNode> NodesWithActiveConnectionsByOwner(int ownerId)
     {
         // get the cells that are parts of completed connections between towns
@@ -971,7 +984,9 @@ public class Strategy
                     .FirstOrDefault(c => c.IsActive);
                 if (activeConnection != null)
                 {
-                    var cost = _arena.GetAStarCost(town.Location, targetTown.Location, activeConnection.Nodes);
+                    var nodesToExclude =
+                        _arena.GetRegionAdjacentNodes(activeConnection.Nodes, town.Location, targetTown.Location);
+                    var cost = _arena.GetAStarCost(town.Location, targetTown.Location, nodesToExclude);
                     townPairs.Add((town.Location, targetTown.Location, cost));
                 }
             }
